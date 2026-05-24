@@ -1,64 +1,80 @@
-import { StyleSheet, Text, View, Button, Alert, TouchableOpacity } from 'react-native';
+import { StyleSheet, Text, View, Button, Alert, TouchableOpacity, FlatList, ActivityIndicator } from 'react-native';
 import React, { useEffect, useState, useRef } from 'react';
-import { Accelerometer } from 'expo-sensors'; // <-- THE NEW HARDWARE LINK
-import { getNearestServices, syncLiveArea } from '../services/DatabaseService'; 
-import { getLiveLocation } from '../services/LocationService';
+import { Accelerometer } from 'expo-sensors';
+import * as Location from 'expo-location'; // Using Expo's native location tracker
+
+// Import our new Smart Vault Engine
+import { initializeSmartVault, syncAreaIfNeeded, getLocalEmergencyServices } from '../services/DatabaseService'; 
 import { sendEmergencySMS } from '../services/SmsService'; 
 
 export default function HomeScreen() {
   const [isSyncing, setIsSyncing] = useState(true);
-  const [countdown, setCountdown] = useState(null); // Holds the 10-second timer
-  const timerRef = useRef(null); // Keeps track of the interval
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [nearbyServices, setNearbyServices] = useState<any[]>([]); // Holds our UI data
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // 1. Background Sync (Runs once on app load)
+  // ==========================================
+  // 1. THE SILENT CO-PILOT (Boot Sequence)
+  // ==========================================
   useEffect(() => {
-    const initializeApp = async () => {
+    const bootSystem = async () => {
       try {
-        const liveCoords = await getLiveLocation();
-        await syncLiveArea(liveCoords.latitude, liveCoords.longitude);
+        console.log("Booting Smart Vault...");
+        await initializeSmartVault();
+
+        console.log("Requesting GPS Permissions...");
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert("Permission Denied", "RoadSoS needs GPS to build your safety net.");
+          setIsSyncing(false);
+          return;
+        }
+
+        console.log("Acquiring Satellite Lock...");
+        const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        const { latitude, longitude } = location.coords;
+
+        // Trigger the Smart Vault to check memory and download if needed
+        await syncAreaIfNeeded(latitude, longitude);
+
+        // Pull the local data to show on the screen
+        const localData = await getLocalEmergencyServices(latitude, longitude);
+        setNearbyServices(localData);
+
       } catch (error) {
-        console.log("Background sync skipped.");
+        console.log("Boot sequence error:", error);
       } finally {
         setIsSyncing(false);
       }
     };
-    initializeApp();
+
+    bootSystem();
   }, []); 
 
-  // 2. The Auto-Crash Detector (Always listening in the background)
+  // ==========================================
+  // 2. THE AUTO-CRASH DETECTOR
+  // ==========================================
   useEffect(() => {
-    // Read the sensor 5 times a second
     Accelerometer.setUpdateInterval(200);
-
     const subscription = Accelerometer.addListener(data => {
-      // If we are already counting down, ignore new bumps
       if (timerRef.current) return;
-
       const { x, y, z } = data;
-      // Calculate total G-force (1G is resting gravity)
       const totalGForce = Math.sqrt(x * x + y * y + z * z);
 
-      // If G-force exceeds 4.0Gs, we assume a severe collision occurred
-      // (You can lower this to 2.0 to test it by shaking your phone really hard!)
       if (totalGForce > 4.0) {
         triggerCrashSequence();
       }
     });
-
     return () => subscription.remove();
   }, []);
 
   const triggerCrashSequence = () => {
-    console.log("CRASH DETECTED! Starting SOS Countdown...");
     let timeLeft = 10;
     setCountdown(timeLeft);
-
     timerRef.current = setInterval(() => {
       timeLeft -= 1;
       setCountdown(timeLeft);
-
       if (timeLeft <= 0) {
-        // Time is up! Fire the SOS automatically.
         cancelCrashSequence(); 
         triggerSOS(); 
       }
@@ -70,41 +86,29 @@ export default function HomeScreen() {
       clearInterval(timerRef.current);
       timerRef.current = null;
       setCountdown(null);
-      console.log("Crash sequence cancelled by user.");
     }
   };
 
-  // 3. The SOS Dispatch Engine
   const triggerSOS = async () => {
     try {
-      console.log("Acquiring Live GPS Target...");
-      const liveCoords = await getLiveLocation();
-      
-      console.log("Searching Offline Database...");
-      const closestServices = await getNearestServices(liveCoords.latitude, liveCoords.longitude, 'mechanic');
-      
-      console.log("Deploying Automated SMS...");
-      // Replace '112' with your phone number to test!
-      await sendEmergencySMS(liveCoords, closestServices, ['112']);
-      
-    } catch (error) {
-      console.error("SOS System Failure:", error);
-      Alert.alert("Error", error.message);
+      const location = await Location.getCurrentPositionAsync({});
+      await sendEmergencySMS(location.coords, nearbyServices, ['112']);
+    } catch (error: any) {
+      Alert.alert("SOS Failure", error.message);
     }
   };
 
   // ==========================================
-  // UI RENDERING: CRASH MODE VS NORMAL MODE
+  // UI RENDERING
   // ==========================================
   
   if (countdown !== null) {
-    // THE CRASH UI (Flashes red, massive cancel button)
+    // CRASH OVERRIDE UI
     return (
-      <View style={[styles.container, { backgroundColor: '#FF0000' }]}>
+      <View style={[styles.container, { backgroundColor: '#D32F2F' }]}>
         <Text style={styles.crashTitle}>CRASH DETECTED</Text>
         <Text style={styles.crashSubtitle}>Auto-dispatching SOS in:</Text>
         <Text style={styles.timerText}>{countdown}s</Text>
-        
         <TouchableOpacity style={styles.cancelButton} onPress={cancelCrashSequence}>
           <Text style={styles.cancelButtonText}>I AM SAFE (CANCEL)</Text>
         </TouchableOpacity>
@@ -112,36 +116,73 @@ export default function HomeScreen() {
     );
   }
 
-  // THE NORMAL UI
+  if (isSyncing) {
+    // SATELLITE SEARCHING UI
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator size="large" color="#D32F2F" />
+        <Text style={[styles.title, {marginTop: 20}]}>Securing Area...</Text>
+        <Text style={styles.subtitle}>Switching to satellite GPS & verifying offline vault.</Text>
+      </View>
+    );
+  }
+
+  // NORMAL UI WITH DATA CARDS
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>RoadSOS: Active</Text>
-      <Text style={styles.subtitle}>
-        {isSyncing ? "Caching local area..." : "Crash Detection Armed"}
-      </Text>
+      <View style={styles.header}>
+        <Text style={styles.title}>RoadSOS: Active</Text>
+        <Text style={styles.subtitle}>Crash Detection Armed • Offline Vault Ready</Text>
+      </View>
+
+      <View style={styles.listContainer}>
+        <Text style={styles.sectionTitle}>Nearest Emergency Services</Text>
+        {nearbyServices.length === 0 ? (
+          <Text style={styles.emptyText}>No emergency POIs found in this 10km map tile.</Text>
+        ) : (
+          <FlatList
+            data={nearbyServices}
+            keyExtractor={(item) => item.id.toString()}
+            renderItem={({ item }) => (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>{item.name}</Text>
+                <Text style={styles.cardType}>{item.type.toUpperCase()}</Text>
+              </View>
+            )}
+          />
+        )}
+      </View>
       
       <View style={styles.buttonContainer}>
-        <Button 
-           title="MANUAL SOS OVERRIDE" 
-           color="#FF0000" 
-           onPress={triggerSOS} 
-           disabled={isSyncing} 
-        /> 
+        <Button title="MANUAL SOS OVERRIDE" color="#D32F2F" onPress={triggerSOS} /> 
       </View>
     </View>
   );
 }
 
+// ==========================================
+// STYLESHEET
+// ==========================================
 const styles = StyleSheet.create({
-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F5F5F5' },
-  title: { fontSize: 28, fontWeight: 'bold' },
-  subtitle: { fontSize: 16, color: 'gray', marginBottom: 40 },
-  buttonContainer: { width: '80%', padding: 10, backgroundColor: '#fff', borderRadius: 10, elevation: 5 },
+  container: { flex: 1, backgroundColor: '#F8F9FA', paddingTop: 60, paddingHorizontal: 20 },
+  header: { alignItems: 'center', marginBottom: 20 },
+  title: { fontSize: 26, fontWeight: '900', color: '#111' },
+  subtitle: { fontSize: 14, color: '#666', marginTop: 5, fontWeight: '600' },
   
-  // Crash UI Styles
-  crashTitle: { fontSize: 36, fontWeight: 'bold', color: '#FFF', textAlign: 'center' },
-  crashSubtitle: { fontSize: 20, color: '#FFF', marginTop: 10 },
-  timerText: { fontSize: 80, fontWeight: 'bold', color: '#FFF', marginVertical: 20 },
-  cancelButton: { backgroundColor: '#FFF', padding: 20, borderRadius: 10, marginTop: 40, width: '80%' },
-  cancelButtonText: { color: '#FF0000', fontSize: 20, fontWeight: 'bold', textAlign: 'center' }
+  // Card UI Styles
+  listContainer: { flex: 1, width: '100%' },
+  sectionTitle: { fontSize: 18, fontWeight: 'bold', color: '#333', marginBottom: 10 },
+  emptyText: { color: '#888', fontStyle: 'italic', textAlign: 'center', marginTop: 20 },
+  card: { backgroundColor: '#FFF', padding: 16, borderRadius: 12, marginBottom: 10, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 5, elevation: 2 },
+  cardTitle: { fontSize: 16, fontWeight: 'bold', color: '#222' },
+  cardType: { fontSize: 12, color: '#D32F2F', marginTop: 4, fontWeight: '700' },
+
+  buttonContainer: { width: '100%', paddingBottom: 40, paddingTop: 10 },
+  
+  // Crash UI
+  crashTitle: { fontSize: 36, fontWeight: '900', color: '#FFF', textAlign: 'center', marginTop: 100 },
+  crashSubtitle: { fontSize: 20, color: '#FFF', marginTop: 10, textAlign: 'center' },
+  timerText: { fontSize: 100, fontWeight: 'bold', color: '#FFF', textAlign: 'center', marginVertical: 20 },
+  cancelButton: { backgroundColor: '#FFF', padding: 20, borderRadius: 12, marginTop: 40, alignSelf: 'center', width: '90%' },
+  cancelButtonText: { color: '#D32F2F', fontSize: 20, fontWeight: '900', textAlign: 'center' }
 });

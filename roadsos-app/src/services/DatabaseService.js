@@ -1,141 +1,211 @@
-// 1. We use the modern SQLite, but keep the legacy FileSystem to avoid crashes
 import * as SQLite from 'expo-sqlite';
-import * as FileSystem from 'expo-file-system/legacy';
-import { Asset } from 'expo-asset';
 
-// 2. The Haversine Formula
-function calculateDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371; // Radius of the Earth in km
-    const dLat = (lat2 - lat1) * (Math.PI / 180);
-    const dLon = (lon2 - lon1) * (Math.PI / 180);
-    const a = 
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon / 2) * Math.sin(dLon / 2); 
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); 
-    return R * c; 
-}
+// Open or create the local vault
+const db = SQLite.openDatabaseSync('roadsos_global_vault.db');
 
-// 3. Initialize and Open the Database
-async function openDatabase() {
-    const dbName = 'roadsos_patna.db';
-    const dbAsset = require('../../assets/roadsos_patna.db');
-    const dbUri = Asset.fromModule(dbAsset).uri;
-    const dbFilePath = `${FileSystem.documentDirectory}SQLite/${dbName}`;
+export const initializeSmartVault = async () => {
+  // 1. THE MAP TILES TABLE (Tracks memory, 14-day limits, and frequent places)
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS MapTiles (
+      tile_id TEXT PRIMARY KEY,
+      last_accessed INTEGER,
+      visit_count INTEGER DEFAULT 1,
+      is_protected BOOLEAN DEFAULT 0
+    );
+  `);
 
-    // Copy the database from assets to active memory if it isn't there yet
-    const fileInfo = await FileSystem.getInfoAsync(dbFilePath);
-    if (!fileInfo.exists) {
-        await FileSystem.makeDirectoryAsync(`${FileSystem.documentDirectory}SQLite`, { intermediates: true });
-        await FileSystem.downloadAsync(dbUri, dbFilePath);
-    }
-    
-    // THE MODERN WAY: Simple async open
-    return await SQLite.openDatabaseAsync(dbName);
-}
-
-// 4. The Core Search Engine
-export const getNearestServices = async (userLat, userLon, serviceType = null) => {
-    try {
-        const db = await openDatabase();
-        
-        let query = 'SELECT * FROM emergency_services';
-        let params = [];
-
-        if (serviceType) {
-            query += ' WHERE service_type = ?';
-            params.push(serviceType);
-        }
-
-        // THE MODERN WAY: getAllAsync replaces the transaction callbacks
-        const _array = await db.getAllAsync(query, params);
-            
-        const servicesWithDistance = _array.map(service => {
-            const distance = calculateDistance(userLat, userLon, service.latitude, service.longitude);
-            return { ...service, distance };
-        });
-
-        const sortedServices = servicesWithDistance.sort((a, b) => a.distance - b.distance);
-        return sortedServices.slice(0, 10);
-        
-    } catch (error) {
-        console.error("Database Query Failed:", error);
-        throw error;
-    }
+  // 2. THE EMERGENCY POI TABLE (Featherweight data: only hospitals, police, mechanics)
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS EmergencyServices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tile_id TEXT,
+      type TEXT,
+      name TEXT,
+      lat REAL,
+      lon REAL,
+      phone TEXT,
+      FOREIGN KEY(tile_id) REFERENCES MapTiles(tile_id) ON DELETE CASCADE
+    );
+  `);
+  console.log("Smart Vault Initialized.");
 };
 
-// 5. The Dynamic Network Sync Engine
-// 5. The Dynamic Network Sync Engine (Upgraded for Vehicle Rescue)
-export const syncLiveArea = async (lat, lon) => {
-    try {
-        console.log("Initiating Expanded Overpass API Sync...");
-        
-        const radiusKm = 15;
-        const deltaLat = radiusKm / 111.0; 
-        const deltaLon = radiusKm / (111.0 * Math.cos(lat * (Math.PI / 180)));
+// ==========================================
+// THE 9-TILE SAFETY NET ENGINE
+// ==========================================
 
-        const south = lat - deltaLat;
-        const north = lat + deltaLat;
-        const west = lon - deltaLon;
-        const east = lon + deltaLon;
+// Helper: Converts GPS to a rough 10kmx10km "Tile ID" (e.g., "lat25.6_lon85.1")
+export const getTileId = (lat, lon) => {
+  return `lat${Math.round(lat * 10)}_lon${Math.round(lon * 10)}`;
+};
 
-        // UPDATED: Added car repair, motorcycle repair, tyre shops, and towing
-        const query = `
-            [out:json][timeout:15];
-            (
-              node["amenity"="hospital"](${south},${west},${north},${east});
-              node["amenity"="clinic"](${south},${west},${north},${east});
-              node["amenity"="police"](${south},${west},${north},${east});
-              node["shop"="car_repair"](${south},${west},${north},${east});
-              node["shop"="motorcycle_repair"](${south},${west},${north},${east});
-              node["shop"="tyres"](${south},${west},${north},${east});
-              node["amenity"="vehicle_towing"](${south},${west},${north},${east});
-            );
-            out body;
-        `;
-
-        const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
-        const response = await fetch(url);
-        
-        if (!response.ok) {
-            throw new Error("Overpass server rejected the request. It might be busy.");
-        }
-        
-        const data = await response.json();
-        const db = await openDatabase();
-        
-        await db.execAsync('DELETE FROM emergency_services');
-
-        let insertedCount = 0;
-        for (const element of data.elements) {
-            if (element.type === 'node') {
-                const amenity = element.tags?.amenity;
-                const shop = element.tags?.shop; // We need to check 'shop' tags now too
-                
-                let serviceType = 'unknown';
-                
-                // Categorize the new tags
-                if (amenity === 'hospital' || amenity === 'clinic') serviceType = 'hospital';
-                else if (amenity === 'police') serviceType = 'police';
-                else if (shop === 'car_repair' || shop === 'motorcycle_repair') serviceType = 'mechanic';
-                else if (shop === 'tyres') serviceType = 'puncture';
-                else if (amenity === 'vehicle_towing') serviceType = 'towing';
-
-                const name = element.tags?.name || `Unknown ${serviceType.toUpperCase()}`;
-                const phone = element.tags?.phone || 'Not Available';
-
-                await db.runAsync(
-                    'INSERT INTO emergency_services (service_type, name, latitude, longitude, phone) VALUES (?, ?, ?, ?, ?)',
-                    [serviceType, name, element.lat, element.lon, phone]
-                );
-                insertedCount++;
-            }
-        }
-
-        console.log(`Sync Complete: Cached ${insertedCount} comprehensive rescue contacts offline.`);
-        return true;
-
-    } catch (error) {
-        console.error("Sync Failed (Will rely on existing offline data):", error.message);
-        return false; 
+// Generates the current tile + the 8 surrounding tiles
+export const get9TileSafetyNet = (lat, lon) => {
+  const tiles = [];
+  const offset = 0.1; // roughly 10-11km at the equator
+  
+  for (let dLat = -offset; dLat <= offset; dLat += offset) {
+    for (let dLon = -offset; dLon <= offset; dLon += offset) {
+      tiles.push(getTileId(lat + dLat, lon + dLon));
     }
+  }
+  return tiles;
+};
+
+// ==========================================
+// MEMORY MANAGEMENT (The Auto-Cleanup)
+// ==========================================
+
+export const performMemoryCleanup = async () => {
+  const now = Date.now();
+  const fourteenDaysMs = 14 * 24 * 60 * 60 * 1000;
+  const cutoffTime = now - fourteenDaysMs;
+
+  console.log("Running Vault Maintenance...");
+
+  // 1. The 14-Day Cleanup: Delete unprotected tiles older than 14 days
+  await db.runAsync(`
+    DELETE FROM MapTiles 
+    WHERE is_protected = 0 AND last_accessed < ?
+  `, [cutoffTime]);
+
+  // 2. The Emergency Brake: If we have more than 10 tiles, delete the oldest unpinned one
+  const tileCountRow = await db.getFirstAsync(`SELECT COUNT(*) as count FROM MapTiles`);
+  
+  if (tileCountRow.count > 10) { 
+    console.log("Storage hitting limit! Engaging Emergency Brake...");
+    await db.runAsync(`
+      DELETE FROM MapTiles 
+      WHERE is_protected = 0 
+      ORDER BY last_accessed ASC 
+      LIMIT 1
+    `);
+  }
+};
+
+// ==========================================
+// THE SILENT CO-PILOT (Background Sync)
+// ==========================================
+
+// ==========================================
+// THE SILENT CO-PILOT (Aggressive Multi-Server Sync)
+// ==========================================
+
+// Helper function to create a small delay between retries
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+export const syncAreaIfNeeded = async (lat, lon) => {
+  const currentTileId = getTileId(lat, lon);
+  const now = Date.now();
+
+  // 1. Check if we already have this tile
+  const existingTile = await db.getFirstAsync(
+    `SELECT * FROM MapTiles WHERE tile_id = ?`, 
+    [currentTileId]
+  );
+
+  if (existingTile) {
+    const newVisitCount = existingTile.visit_count + 1;
+    const isProtected = newVisitCount >= 3 ? 1 : 0; 
+    
+    await db.runAsync(`
+      UPDATE MapTiles 
+      SET last_accessed = ?, visit_count = ?, is_protected = ? 
+      WHERE tile_id = ?
+    `, [now, newVisitCount, isProtected, currentTileId]);
+    
+    console.log(`Tile ${currentTileId} updated. Protected status: ${isProtected}`);
+    return; // Data already exists, exit early!
+  }
+
+  // 2. We don't have this tile! Time to fetch.
+  console.log(`Entering new territory. Downloading Safety Net for ${currentTileId}...`);
+  
+  try {
+    await performMemoryCleanup();
+
+    const overpassQuery = `
+      [out:json][timeout:10];
+      (
+        node["amenity"="hospital"](around:5000, ${lat}, ${lon});
+        node["amenity"="police"](around:5000, ${lat}, ${lon});
+      );
+      out body;
+    `;
+
+    // THE AGGRESSIVE RETRY PROTOCOL
+    // A list of global fallback servers
+    const overpassServers = [
+      'https://overpass-api.de/api/interpreter',       // Main Server (Germany)
+      'https://lz4.overpass-api.de/api/interpreter',   // Backup 1 (Germany)
+      'https://overpass.kumi.systems/api/interpreter', // Backup 2 (Russia)
+      'https://overpass.osm.ch/api/interpreter'        // Backup 3 (Switzerland)
+    ];
+
+    let downloadedData = null;
+    let syncSuccess = false;
+
+    for (let i = 0; i < overpassServers.length; i++) {
+      try {
+        console.log(`Attempting Server ${i + 1}: ${overpassServers[i]}`);
+        
+        const response = await fetch(`${overpassServers[i]}?data=${encodeURIComponent(overpassQuery)}`, {
+            // Force a 10 second timeout so we don't hang forever on a bad server
+            signal: AbortSignal.timeout(10000) 
+        });
+
+        if (!response.ok) {
+            throw new Error(`Server rejected connection (Status: ${response.status})`);
+        }
+
+        downloadedData = await response.json();
+        syncSuccess = true;
+        console.log(`Success! Data acquired from Server ${i + 1}.`);
+        break; // We got the data, instantly exit the retry loop!
+
+      } catch (error) {
+        console.log(`Server ${i + 1} failed. Pivoting to next server...`);
+        await sleep(1500); // Wait 1.5 seconds so we don't trigger spam filters
+      }
+    }
+
+    // If we looped through all 4 servers and STILL failed
+    if (!syncSuccess || !downloadedData) {
+        throw new Error("All global map servers are currently overloaded.");
+    }
+
+    // 3. Save the successfully fetched data to the Vault
+    await db.runAsync(`
+      INSERT INTO MapTiles (tile_id, last_accessed, visit_count, is_protected) 
+      VALUES (?, ?, 1, 0)
+    `, [currentTileId, now]);
+
+    for (const element of downloadedData.elements) {
+      if (element.type === 'node') {
+        const name = element.tags?.name || "Unknown Facility";
+        const type = element.tags?.amenity || "emergency";
+        
+        await db.runAsync(`
+          INSERT INTO EmergencyServices (tile_id, type, name, lat, lon) 
+          VALUES (?, ?, ?, ?, ?)
+        `, [currentTileId, type, name, element.lat, element.lon]);
+      }
+    }
+    console.log(`Safety Net secured. ${downloadedData.elements.length} emergency POIs saved offline.`);
+
+  } catch (error) {
+    console.log("Background sync completely failed:", error.message);
+  }
+};
+// ==========================================
+// FRONTEND HELPER (To display data on screen)
+// ==========================================
+export const getLocalEmergencyServices = async (lat, lon) => {
+  const currentTileId = getTileId(lat, lon);
+  // Fetch all hospitals saved in the current 10km tile
+  const result = await db.getAllAsync(
+    `SELECT * FROM EmergencyServices WHERE tile_id = ? LIMIT 5`, 
+    [currentTileId]
+  );
+  return result;
 };
