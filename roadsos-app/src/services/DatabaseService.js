@@ -63,11 +63,10 @@ export const getNearestServices = async (userLat, userLon, serviceType = null) =
     }
 };
 
-// 5. The Dynamic Network Sync Engine
-// 5. The Dynamic Network Sync Engine (Upgraded for Vehicle Rescue)
+// 5. The Dynamic Network Sync Engine (With Global Failover)
 export const syncLiveArea = async (lat, lon) => {
     try {
-        console.log("Initiating Expanded Overpass API Sync...");
+        console.log("Initiating Distributed Overpass API Sync...");
         
         const radiusKm = 15;
         const deltaLat = radiusKm / 111.0; 
@@ -78,7 +77,6 @@ export const syncLiveArea = async (lat, lon) => {
         const west = lon - deltaLon;
         const east = lon + deltaLon;
 
-        // UPDATED: Added car repair, motorcycle repair, tyre shops, and towing
         const query = `
             [out:json][timeout:15];
             (
@@ -93,27 +91,80 @@ export const syncLiveArea = async (lat, lon) => {
             out body;
         `;
 
-        const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
-        const response = await fetch(url);
+        const encodedQuery = encodeURIComponent(query);
         
-        if (!response.ok) {
-            throw new Error("Overpass server rejected the request. It might be busy.");
+        // GLOBAL MIRROR ARRAY
+        const ENDPOINTS = [
+            `https://lz4.overpass-api.de/api/interpreter?data=${encodedQuery}`, // High-speed German mirror
+            `https://overpass.openstreetmap.ru/api/interpreter?data=${encodedQuery}`, // Russian mirror
+            `https://overpass.osm.ch/api/interpreter?data=${encodedQuery}`, // Swiss mirror
+            `https://overpass-api.de/api/interpreter?data=${encodedQuery}`  // Standard fallback
+        ];
+
+        let data = null;
+        let success = false;
+
+        // THE FAILOVER LOOP
+        for (let i = 0; i < ENDPOINTS.length; i++) {
+            try {
+                console.log(`Trying Overpass Server ${i + 1}...`);
+                const response = await fetch(ENDPOINTS[i]);
+                
+                if (response.ok) {
+                    data = await response.json();
+                    success = true;
+                    console.log(`Server ${i + 1} connected successfully.`);
+                    break; // Exit the loop as soon as we get the data
+                }
+            } catch (err) {
+                console.log(`Server ${i + 1} failed. Rerouting...`);
+                // Silently catch the error and let the loop try the next URL
+            }
         }
-        
-        const data = await response.json();
+
+        if (!success || !data) {
+            throw new Error("All global mirrors are currently unreachable.");
+        }
+
         const db = await openDatabase();
         
-        await db.execAsync('DELETE FROM emergency_services');
-
+        // SAFETY CHECK: Only wipe the old database if the API actually found new data
         let insertedCount = 0;
+        const validNodes = data.elements.filter(e => e.type === 'node');
+        
+        if (validNodes.length > 0) {
+            await db.execAsync('DELETE FROM emergency_services');
+            
+            for (const element of validNodes) {
+                // ... (Keep your existing amenity/shop tagging logic inside the loop exactly the same)
+                const amenity = element.tags?.amenity;
+                const shop = element.tags?.shop;
+                let serviceType = 'unknown';
+                if (amenity === 'hospital' || amenity === 'clinic') serviceType = 'hospital';
+                else if (amenity === 'police') serviceType = 'police';
+                else if (shop === 'car_repair' || shop === 'motorcycle_repair') serviceType = 'mechanic';
+                else if (shop === 'tyres') serviceType = 'puncture';
+                else if (amenity === 'vehicle_towing') serviceType = 'towing';
+
+                const name = element.tags?.name || `Unknown ${serviceType.toUpperCase()}`;
+                const phone = element.tags?.phone || 'Not Available';
+
+                await db.runAsync(
+                    'INSERT INTO emergency_services (service_type, name, latitude, longitude, phone) VALUES (?, ?, ?, ?, ?)',
+                    [serviceType, name, element.lat, element.lon, phone]
+                );
+                insertedCount++;
+            }
+        } else {
+             console.log("No new data found. Keeping the previous offline database cache.");
+        }
         for (const element of data.elements) {
             if (element.type === 'node') {
                 const amenity = element.tags?.amenity;
-                const shop = element.tags?.shop; // We need to check 'shop' tags now too
+                const shop = element.tags?.shop;
                 
                 let serviceType = 'unknown';
                 
-                // Categorize the new tags
                 if (amenity === 'hospital' || amenity === 'clinic') serviceType = 'hospital';
                 else if (amenity === 'police') serviceType = 'police';
                 else if (shop === 'car_repair' || shop === 'motorcycle_repair') serviceType = 'mechanic';
@@ -135,7 +186,7 @@ export const syncLiveArea = async (lat, lon) => {
         return true;
 
     } catch (error) {
-        console.error("Sync Failed (Will rely on existing offline data):", error.message);
+        console.error("Critical Sync Failure:", error.message);
         return false; 
     }
 };

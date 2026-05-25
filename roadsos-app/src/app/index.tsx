@@ -81,7 +81,7 @@ export default function HomeScreen() {
       const liveCoords = await getLiveLocation();
       
       console.log("Searching Offline Database...");
-      const closestServices = await getNearestServices(liveCoords.latitude, liveCoords.longitude, 'mechanic');
+      const closestServices = await getNearestServices(liveCoords.latitude, liveCoords.longitude, 'hospital');
       
       console.log("Deploying Automated SMS...");
       // Replace '112' with your phone number to test!
