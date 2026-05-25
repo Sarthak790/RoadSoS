@@ -74,18 +74,57 @@ export default function HomeScreen() {
     }
   };
 
-  // 3. The SOS Dispatch Engine
+  // 3. The Comprehensive SOS Dispatch Engine
   const triggerSOS = async () => {
     try {
       console.log("Acquiring Live GPS Target...");
       const liveCoords = await getLiveLocation();
       
-      console.log("Searching Offline Database...");
-      const closestServices = await getNearestServices(liveCoords.latitude, liveCoords.longitude, 'hospital');
+      console.log("Searching Offline Database for Comprehensive Rescue...");
+      
+      // 1. Fetch all domains from the SQLite cache
+      const hospitals = await getNearestServices(liveCoords.latitude, liveCoords.longitude, 'hospital');
+      const police = await getNearestServices(liveCoords.latitude, liveCoords.longitude, 'police');
+      const ambulances = await getNearestServices(liveCoords.latitude, liveCoords.longitude, 'ambulance');
+      const mechanics = await getNearestServices(liveCoords.latitude, liveCoords.longitude, 'mechanic');
+      const petrolPumps = await getNearestServices(liveCoords.latitude, liveCoords.longitude, 'petrol_pump');
+
+      // Helper function to format distance dynamically
+      const formatDist = (dist) => dist < 1 ? `${(dist * 1000).toFixed(0)}m` : `${dist.toFixed(1)}km`;
+
+      // Helper function to safely print the top 3
+      const printTop3 = (title, dataArray) => {
+        console.log(`\n--- TOP 3 ${title} ---`);
+        if (dataArray.length === 0) {
+            console.log("No services found in this area.");
+            return [];
+        }
+        const top3 = dataArray.slice(0, 3);
+        top3.forEach((item, index) => {
+            console.log(`${index + 1}. ${item.name} (${item.phone}) - ${formatDist(item.distance)}`);
+        });
+        return top3;
+      };
+
+      // 2. Output to Terminal for the Hackathon Judges
+      console.log("\n=====================================");
+      console.log("🚨 EMERGENCY DISPATCH PAYLOAD 🚨");
+      
+      const topHospitals = printTop3('HOSPITALS', hospitals);
+      const topPolice = printTop3('POLICE STATIONS', police);
+      const topAmbulances = printTop3('AMBULANCES', ambulances);
+      const topMechanics = printTop3('MECHANICS / REPAIR', mechanics);
+      printTop3('PETROL PUMPS (SAFE ZONES)', petrolPumps);
+      
+      console.log("=====================================\n");
       
       console.log("Deploying Automated SMS...");
-      // Replace '112' with your phone number to test!
-      await sendEmergencySMS(liveCoords, closestServices, ['112']);
+      
+      // 3. Compress the absolute most critical contacts for the SMS limit
+      // (We grab the #1 Hospital, #1 Police, and #1 Mechanic to avoid SMS character limits)
+      const smsServices = [topHospitals[0], topPolice[0], topMechanics[0]].filter(Boolean);
+      
+      await sendEmergencySMS(liveCoords, smsServices, ['112']);
       
     } catch (error) {
       console.error("SOS System Failure:", error);

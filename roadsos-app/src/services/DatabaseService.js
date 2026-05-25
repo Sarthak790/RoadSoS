@@ -17,7 +17,7 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 
 // 3. Initialize and Open the Database
 async function openDatabase() {
-    const dbName = 'roadsos_patna.db';
+    const dbName = 'roadsos_patna_v2.db';
     const dbAsset = require('../../assets/roadsos_patna.db');
     const dbUri = Asset.fromModule(dbAsset).uri;
     const dbFilePath = `${FileSystem.documentDirectory}SQLite/${dbName}`;
@@ -63,12 +63,12 @@ export const getNearestServices = async (userLat, userLon, serviceType = null) =
     }
 };
 
-// 5. The Dynamic Network Sync Engine (With Global Failover)
+// 5. The Dynamic Network Sync Engine (With User-Agent Identity)
 export const syncLiveArea = async (lat, lon) => {
     try {
-        console.log("Initiating Distributed Overpass API Sync...");
+        console.log(`Initiating Sync at GPS: Lat ${lat.toFixed(4)}, Lon ${lon.toFixed(4)}...`);
         
-        const radiusKm = 15;
+        const radiusKm = 5; 
         const deltaLat = radiusKm / 111.0; 
         const deltaLon = radiusKm / (111.0 * Math.cos(lat * (Math.PI / 180)));
 
@@ -77,48 +77,43 @@ export const syncLiveArea = async (lat, lon) => {
         const west = lon - deltaLon;
         const east = lon + deltaLon;
 
-        const query = `
-            [out:json][timeout:15];
-            (
-              node["amenity"="hospital"](${south},${west},${north},${east});
-              node["amenity"="clinic"](${south},${west},${north},${east});
-              node["amenity"="police"](${south},${west},${north},${east});
-              node["shop"="car_repair"](${south},${west},${north},${east});
-              node["shop"="motorcycle_repair"](${south},${west},${north},${east});
-              node["shop"="tyres"](${south},${west},${north},${east});
-              node["amenity"="vehicle_towing"](${south},${west},${north},${east});
-            );
-            out body;
-        `;
+        // THE FIX 1: A completely flattened query on a single line so URL encoding cannot break it.
+        const query = `[out:json][timeout:15];(node["amenity"="hospital"](${south},${west},${north},${east});way["amenity"="hospital"](${south},${west},${north},${east});node["amenity"="clinic"](${south},${west},${north},${east});way["amenity"="clinic"](${south},${west},${north},${east});node["amenity"="police"](${south},${west},${north},${east});way["amenity"="police"](${south},${west},${north},${east});node["emergency"="ambulance_station"](${south},${west},${north},${east});way["emergency"="ambulance_station"](${south},${west},${north},${east});node["shop"="car_repair"](${south},${west},${north},${east});way["shop"="car_repair"](${south},${west},${north},${east});node["amenity"="fuel"](${south},${west},${north},${east});way["amenity"="fuel"](${south},${west},${north},${east}););out center tags;`;
 
-        const encodedQuery = encodeURIComponent(query);
-        
-        // GLOBAL MIRROR ARRAY
         const ENDPOINTS = [
-            `https://lz4.overpass-api.de/api/interpreter?data=${encodedQuery}`, // High-speed German mirror
-            `https://overpass.openstreetmap.ru/api/interpreter?data=${encodedQuery}`, // Russian mirror
-            `https://overpass.osm.ch/api/interpreter?data=${encodedQuery}`, // Swiss mirror
-            `https://overpass-api.de/api/interpreter?data=${encodedQuery}`  // Standard fallback
+            'https://lz4.overpass-api.de/api/interpreter',
+            'https://z.overpass-api.de/api/interpreter',
+            'https://overpass-api.de/api/interpreter'
         ];
 
         let data = null;
         let success = false;
 
-        // THE FAILOVER LOOP
         for (let i = 0; i < ENDPOINTS.length; i++) {
             try {
-                console.log(`Trying Overpass Server ${i + 1}...`);
-                const response = await fetch(ENDPOINTS[i]);
+                console.log(`Pinging Global Overpass Server ${i + 1}...`);
+                
+                // THE FIX 2: POST request with a custom User-Agent to bypass the bot filter
+                const response = await fetch(ENDPOINTS[i], {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': 'RoadSOS-HackathonProject/1.0 (Student Emergency App)' // Let them know who we are!
+                    },
+                    body: `data=${encodeURIComponent(query)}`
+                });
                 
                 if (response.ok) {
                     data = await response.json();
                     success = true;
-                    console.log(`Server ${i + 1} connected successfully.`);
-                    break; // Exit the loop as soon as we get the data
+                    console.log(`Server ${i + 1} accepted our identity and delivered the payload.`);
+                    break; 
+                } else {
+                    console.log(`Server ${i + 1} rejected request. HTTP Status: ${response.status}`);
                 }
             } catch (err) {
-                console.log(`Server ${i + 1} failed. Rerouting...`);
-                // Silently catch the error and let the loop try the next URL
+                console.log(`Server ${i + 1} failed network connection.`);
             }
         }
 
@@ -126,63 +121,58 @@ export const syncLiveArea = async (lat, lon) => {
             throw new Error("All global mirrors are currently unreachable.");
         }
 
-        const db = await openDatabase();
+        const validElements = data.elements || [];
+        console.log(`Raw map buildings/nodes found by Overpass: ${validElements.length}`);
         
-        // SAFETY CHECK: Only wipe the old database if the API actually found new data
-        let insertedCount = 0;
-        const validNodes = data.elements.filter(e => e.type === 'node');
-        
-        if (validNodes.length > 0) {
+        if (validElements.length > 0) {
+            const db = await openDatabase();
             await db.execAsync('DELETE FROM emergency_services');
             
-            for (const element of validNodes) {
-                // ... (Keep your existing amenity/shop tagging logic inside the loop exactly the same)
-                const amenity = element.tags?.amenity;
-                const shop = element.tags?.shop;
+            let insertedCount = 0;
+            for (const element of validElements) {
+                const tags = element.tags || {};
+                const amenity = tags.amenity;
+                const shop = tags.shop;
+                const emergency = tags.emergency;
+                
                 let serviceType = 'unknown';
+                
+                // Categorize exactly to the hackathon brief
                 if (amenity === 'hospital' || amenity === 'clinic') serviceType = 'hospital';
                 else if (amenity === 'police') serviceType = 'police';
-                else if (shop === 'car_repair' || shop === 'motorcycle_repair') serviceType = 'mechanic';
-                else if (shop === 'tyres') serviceType = 'puncture';
-                else if (amenity === 'vehicle_towing') serviceType = 'towing';
+                else if (emergency === 'ambulance_station') serviceType = 'ambulance';
+                else if (shop === 'car_repair') serviceType = 'mechanic';
+                else if (amenity === 'fuel') serviceType = 'petrol_pump'; 
 
-                const name = element.tags?.name || `Unknown ${serviceType.toUpperCase()}`;
-                const phone = element.tags?.phone || 'Not Available';
+                const name = tags.name || `Unknown ${serviceType.toUpperCase()}`;
+                
+                // OpenStreetMap users store phone numbers in 3 different tags. We check all of them.
+                const phone = tags.phone || tags['contact:phone'] || tags['contact:mobile'] || 'Not Available';
 
-                await db.runAsync(
-                    'INSERT INTO emergency_services (service_type, name, latitude, longitude, phone) VALUES (?, ?, ?, ?, ?)',
-                    [serviceType, name, element.lat, element.lon, phone]
-                );
-                insertedCount++;
+                const elementLat = element.lat || element.center?.lat;
+                const elementLon = element.lon || element.center?.lon;
+
+                if (elementLat && elementLon && serviceType !== 'unknown') {
+                    await db.runAsync(
+                        'INSERT INTO emergency_services (service_type, name, latitude, longitude, phone) VALUES (?, ?, ?, ?, ?)',
+                        [serviceType, name, elementLat, elementLon, phone]
+                    );
+                    insertedCount++;
+                }
             }
+            // HACKATHON WINNING MOVE: Hardcode guaranteed national lifelines into the local offline cache
+            await db.runAsync(
+                'INSERT INTO emergency_services (service_type, name, latitude, longitude, phone) VALUES (?, ?, ?, ?, ?)',
+                ['police', 'National Emergency Response', lat, lon, '112'] // 112 is the universal emergency number in India
+            );
+            await db.runAsync(
+                'INSERT INTO emergency_services (service_type, name, latitude, longitude, phone) VALUES (?, ?, ?, ?, ?)',
+                ['ambulance', 'National Ambulance Service', lat, lon, '108']
+            );
+            console.log(`SUCCESS: Cached ${insertedCount} fully compliant rescue contacts.`);
         } else {
              console.log("No new data found. Keeping the previous offline database cache.");
         }
-        for (const element of data.elements) {
-            if (element.type === 'node') {
-                const amenity = element.tags?.amenity;
-                const shop = element.tags?.shop;
-                
-                let serviceType = 'unknown';
-                
-                if (amenity === 'hospital' || amenity === 'clinic') serviceType = 'hospital';
-                else if (amenity === 'police') serviceType = 'police';
-                else if (shop === 'car_repair' || shop === 'motorcycle_repair') serviceType = 'mechanic';
-                else if (shop === 'tyres') serviceType = 'puncture';
-                else if (amenity === 'vehicle_towing') serviceType = 'towing';
-
-                const name = element.tags?.name || `Unknown ${serviceType.toUpperCase()}`;
-                const phone = element.tags?.phone || 'Not Available';
-
-                await db.runAsync(
-                    'INSERT INTO emergency_services (service_type, name, latitude, longitude, phone) VALUES (?, ?, ?, ?, ?)',
-                    [serviceType, name, element.lat, element.lon, phone]
-                );
-                insertedCount++;
-            }
-        }
-
-        console.log(`Sync Complete: Cached ${insertedCount} comprehensive rescue contacts offline.`);
         return true;
 
     } catch (error) {
