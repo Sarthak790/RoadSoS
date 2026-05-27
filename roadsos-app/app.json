@@ -11,15 +11,15 @@
       "icon": "./assets/expo.icon"
     },
     "android": {
-          "package": "com.roadsos.app", 
-          "adaptiveIcon": {
-            "backgroundColor": "#E6F4FE",
-            "foregroundImage": "./assets/images/android-icon-foreground.png",
-            "backgroundImage": "./assets/images/android-icon-background.png",
-            "monochromeImage": "./assets/images/android-icon-monochrome.png"
-          },
-          "predictiveBackGestureEnabled": false
-        },
+      "package": "com.roadsos.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
     "web": {
       "output": "static",
       "favicon": "./assets/images/favicon.png"
@@ -37,7 +37,13 @@
         }
       ],
       "expo-sqlite",
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow RoadSoS to use your location to calculate driving speed and anticipate cellular dead zones."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

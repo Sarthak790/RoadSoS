@@ -1,10 +1,13 @@
 import * as SQLite from 'expo-sqlite';
+import * as Location from 'expo-location';
 
-// Open or create the local vault
 const db = SQLite.openDatabaseSync('roadsos_global_vault.db');
 
 export const initializeSmartVault = async () => {
-  // 1. THE MAP TILES TABLE (Tracks memory, 14-day limits, and frequent places)
+  // Explicitly enable Foreign Keys to ensure ON DELETE CASCADE works properly
+  await db.execAsync('PRAGMA foreign_keys = ON;');
+
+  // 1. THE MAP TILES TABLE (Memory, limits, frequent places)
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS MapTiles (
       tile_id TEXT PRIMARY KEY,
@@ -13,11 +16,11 @@ export const initializeSmartVault = async () => {
       is_protected BOOLEAN DEFAULT 0
     );
   `);
-
-  // 2. THE EMERGENCY POI TABLE (Featherweight data: only hospitals, police, mechanics)
+                                                       
+  // 2. THE EMERGENCY POI TABLE (No Autoincrement! Uses unique OSM ID to prevent duplicates)
   await db.execAsync(`
     CREATE TABLE IF NOT EXISTS EmergencyServices (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT PRIMARY KEY,
       tile_id TEXT,
       type TEXT,
       name TEXT,
@@ -30,20 +33,11 @@ export const initializeSmartVault = async () => {
   console.log("Smart Vault Initialized.");
 };
 
-// ==========================================
-// THE 9-TILE SAFETY NET ENGINE
-// ==========================================
+export const getTileId = (lat, lon) => `lat${Math.round(lat * 10)}_lon${Math.round(lon * 10)}`;
 
-// Helper: Converts GPS to a rough 10kmx10km "Tile ID" (e.g., "lat25.6_lon85.1")
-export const getTileId = (lat, lon) => {
-  return `lat${Math.round(lat * 10)}_lon${Math.round(lon * 10)}`;
-};
-
-// Generates the current tile + the 8 surrounding tiles
 export const get9TileSafetyNet = (lat, lon) => {
   const tiles = [];
-  const offset = 0.1; // roughly 10-11km at the equator
-  
+  const offset = 0.1; 
   for (let dLat = -offset; dLat <= offset; dLat += offset) {
     for (let dLon = -offset; dLon <= offset; dLon += offset) {
       tiles.push(getTileId(lat + dLat, lon + dLon));
@@ -52,160 +46,155 @@ export const get9TileSafetyNet = (lat, lon) => {
   return tiles;
 };
 
-// ==========================================
-// MEMORY MANAGEMENT (The Auto-Cleanup)
-// ==========================================
-
 export const performMemoryCleanup = async () => {
   const now = Date.now();
-  const fourteenDaysMs = 14 * 24 * 60 * 60 * 1000;
-  const cutoffTime = now - fourteenDaysMs;
+  // 14 days cleanup
+  const cutoffTime = now - (14 * 24 * 60 * 60 * 1000); 
 
-  console.log("Running Vault Maintenance...");
+  await db.runAsync(
+    `DELETE FROM MapTiles WHERE is_protected = 0 AND last_accessed < ?`, 
+    [cutoffTime]
+  );
 
-  // 1. The 14-Day Cleanup: Delete unprotected tiles older than 14 days
-  await db.runAsync(`
-    DELETE FROM MapTiles 
-    WHERE is_protected = 0 AND last_accessed < ?
-  `, [cutoffTime]);
-
-  // 2. The Emergency Brake: If we have more than 10 tiles, delete the oldest unpinned one
   const tileCountRow = await db.getFirstAsync(`SELECT COUNT(*) as count FROM MapTiles`);
   
-  if (tileCountRow.count > 10) { 
-    console.log("Storage hitting limit! Engaging Emergency Brake...");
-    await db.runAsync(`
-      DELETE FROM MapTiles 
-      WHERE is_protected = 0 
-      ORDER BY last_accessed ASC 
-      LIMIT 1
-    `);
+  // Enforcing a maximum tile limit
+  if (tileCountRow && tileCountRow.count > 100) { 
+    await db.runAsync(`DELETE FROM MapTiles WHERE is_protected = 0 ORDER BY last_accessed ASC LIMIT 1`);
   }
 };
 
-// ==========================================
-// THE SILENT CO-PILOT (Background Sync)
-// ==========================================
-
-// ==========================================
-// THE SILENT CO-PILOT (Aggressive Multi-Server Sync)
-// ==========================================
-
-// Helper function to create a small delay between retries
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 export const syncAreaIfNeeded = async (lat, lon) => {
-  const currentTileId = getTileId(lat, lon);
-  const now = Date.now();
-
-  // 1. Check if we already have this tile
-  const existingTile = await db.getFirstAsync(
-    `SELECT * FROM MapTiles WHERE tile_id = ?`, 
-    [currentTileId]
-  );
-
-  if (existingTile) {
-    const newVisitCount = existingTile.visit_count + 1;
-    const isProtected = newVisitCount >= 3 ? 1 : 0; 
-    
-    await db.runAsync(`
-      UPDATE MapTiles 
-      SET last_accessed = ?, visit_count = ?, is_protected = ? 
-      WHERE tile_id = ?
-    `, [now, newVisitCount, isProtected, currentTileId]);
-    
-    console.log(`Tile ${currentTileId} updated. Protected status: ${isProtected}`);
-    return; // Data already exists, exit early!
-  }
-
-  // 2. We don't have this tile! Time to fetch.
-  console.log(`Entering new territory. Downloading Safety Net for ${currentTileId}...`);
-  
   try {
+    const now = Date.now();
+
+    // 1. Predictive Biasing (The Speed Gate)
+    const lastLoc = await Location.getLastKnownPositionAsync({}).catch(() => null);
+    const speedKmH = (lastLoc?.coords?.speed || 0) * 3.6;
+    const heading = lastLoc?.coords?.heading || 0;
+
+    let targetLat = lat;
+    let targetLon = lon;
+
+    if (speedKmH > 40) {
+      const rad = (heading * Math.PI) / 180;
+      targetLat += 0.1 * Math.cos(rad);
+      targetLon += 0.1 * Math.sin(rad);
+      console.log(`Highway speeds detected. Shifting safety net forward.`);
+    }
+
+    // 2. Hometown Protection & Identifying Missing Tiles
+    const nineTiles = get9TileSafetyNet(targetLat, targetLon);
+    const missingTiles = [];
+    
+    for (const tId of nineTiles) {
+      const existingTile = await db.getFirstAsync(`SELECT * FROM MapTiles WHERE tile_id = ?`, [tId]);
+      if (existingTile) {
+        const newVisitCount = existingTile.visit_count + 1;
+        const isProtected = newVisitCount >= 3 ? 1 : 0;
+        await db.runAsync(`UPDATE MapTiles SET last_accessed = ?, visit_count = ?, is_protected = ? WHERE tile_id = ?`, 
+          [now, newVisitCount, isProtected, tId]);
+      } else {
+        missingTiles.push(tId);
+      }
+    }
+
+    if (missingTiles.length === 0) return; // All 9 grids are safely in the vault!
+
+    // 3. Strict Bounding Box Fetch
     await performMemoryCleanup();
+    
+    // Adjusted bounding box for city density
+    const minLat = targetLat - 0.05;
+    const minLon = targetLon - 0.05;
+    const maxLat = targetLat + 0.05;
+    const maxLon = targetLon + 0.05;
 
-    const overpassQuery = `
-      [out:json][timeout:10];
-      (
-        node["amenity"="hospital"](around:5000, ${lat}, ${lon});
-        node["amenity"="police"](around:5000, ${lat}, ${lon});
-      );
-      out body;
-    `;
-
-    // THE AGGRESSIVE RETRY PROTOCOL
-    // A list of global fallback servers
+    // Overpass query configured to catch nodes, ways, and relations
+    const overpassQuery = `[out:json][timeout:25]; (nwr["amenity"~"^(hospital|police)$"](${minLat},${minLon},${maxLat},${maxLon});); out center;`;
+    
     const overpassServers = [
-      'https://overpass-api.de/api/interpreter',       // Main Server (Germany)
-      'https://lz4.overpass-api.de/api/interpreter',   // Backup 1 (Germany)
-      'https://overpass.kumi.systems/api/interpreter', // Backup 2 (Russia)
-      'https://overpass.osm.ch/api/interpreter'        // Backup 3 (Switzerland)
+      'https://overpass-api.de/api/interpreter', 
+      'https://lz4.overpass-api.de/api/interpreter', 
+      'https://overpass.kumi.systems/api/interpreter'
     ];
 
     let downloadedData = null;
-    let syncSuccess = false;
-
     for (let i = 0; i < overpassServers.length; i++) {
       try {
-        console.log(`Attempting Server ${i + 1}: ${overpassServers[i]}`);
+        console.log(`[Watcher] Contacting OSM Server ${i}...`);
         
-        const response = await fetch(`${overpassServers[i]}?data=${encodeURIComponent(overpassQuery)}`, {
-            // Force a 10 second timeout so we don't hang forever on a bad server
-            signal: AbortSignal.timeout(10000) 
+        // 🚨 THE FIX: Manually create a timeout controller that React Native supports
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 25000); // 25 seconds
+        
+        const response = await fetch(overpassServers[i], {
+          method: 'POST',
+          signal: controller.signal, // Attach our manual abort signal
+          headers: {
+            'User-Agent': 'RoadSOS-App/1.0 (contact: akr62225@gmail.com)',
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          // Send the query inside the body instead of the URL
+          body: `data=${encodeURIComponent(overpassQuery)}`
         });
-
-        if (!response.ok) {
-            throw new Error(`Server rejected connection (Status: ${response.status})`);
-        }
-
-        downloadedData = await response.json();
-        syncSuccess = true;
-        console.log(`Success! Data acquired from Server ${i + 1}.`);
-        break; // We got the data, instantly exit the retry loop!
-
-      } catch (error) {
-        console.log(`Server ${i + 1} failed. Pivoting to next server...`);
-        await sleep(1500); // Wait 1.5 seconds so we don't trigger spam filters
-      }
-    }
-
-    // If we looped through all 4 servers and STILL failed
-    if (!syncSuccess || !downloadedData) {
-        throw new Error("All global map servers are currently overloaded.");
-    }
-
-    // 3. Save the successfully fetched data to the Vault
-    await db.runAsync(`
-      INSERT INTO MapTiles (tile_id, last_accessed, visit_count, is_protected) 
-      VALUES (?, ?, 1, 0)
-    `, [currentTileId, now]);
-
-    for (const element of downloadedData.elements) {
-      if (element.type === 'node') {
-        const name = element.tags?.name || "Unknown Facility";
-        const type = element.tags?.amenity || "emergency";
         
-        await db.runAsync(`
-          INSERT INTO EmergencyServices (tile_id, type, name, lat, lon) 
-          VALUES (?, ?, ?, ?, ?)
-        `, [currentTileId, type, name, element.lat, element.lon]);
+        // Clear the timeout if we got a response before 25 seconds
+        clearTimeout(timeoutId);
+
+        if (response.ok) {
+          downloadedData = await response.json();
+          console.log(`[Watcher] Success on Server ${i}!`);
+          break; // We got the data, stop looping!
+        } else {
+          console.log(`[Watcher] Server ${i} rejected request. Status: ${response.status}`);
+          await sleep(1500); // Wait before hammering the next server
+        }
+      } catch (error) { 
+        // Differentiate between our custom timeout and a standard network crash
+        if (error.name === 'AbortError') {
+          console.log(`[Watcher] Server ${i} timed out after 25 seconds.`);
+        } else {
+          console.log(`[Watcher] Server ${i} failed: ${error.message}`);
+        }
+        await sleep(1500); 
       }
     }
-    console.log(`Safety Net secured. ${downloadedData.elements.length} emergency POIs saved offline.`);
 
+    // Safety check to ensure elements exist to prevent a crash in the next step
+    if (!downloadedData || !downloadedData.elements) {
+       console.log("⚠️ All OSM servers failed to provide data.");
+       return; 
+    }
+
+    // 4. Atomic Commit
+    await db.withTransactionAsync(async () => {
+      for (const tId of missingTiles) {
+        await db.runAsync(`INSERT OR IGNORE INTO MapTiles (tile_id, last_accessed, visit_count, is_protected) VALUES (?, ?, 1, 0)`, [tId, now]);
+      }
+      for (const el of downloadedData.elements) {
+        const pointLat = el.lat || el.center?.lat;
+        const pointLon = el.lon || el.center?.lon;
+        
+        if (!pointLat || !pointLon) continue; 
+
+        const accurateTileId = getTileId(pointLat, pointLon);
+        await db.runAsync(`
+          INSERT OR IGNORE INTO EmergencyServices (id, tile_id, type, name, lat, lon) 
+          VALUES (?, ?, ?, ?, ?, ?)
+        `, [el.id.toString(), accurateTileId, el.tags.amenity, el.tags.name || "Emergency Facility", pointLat, pointLon]);
+      }
+    });
+
+    console.log(`Safety Net secured. Vault updated with ${downloadedData.elements.length} locations.`);
   } catch (error) {
-    console.log("Background sync completely failed:", error.message);
+    console.log("Background sync failed:", error.message);
   }
 };
-// ==========================================
-// FRONTEND HELPER (To display data on screen)
-// ==========================================
+
 export const getLocalEmergencyServices = async (lat, lon) => {
   const currentTileId = getTileId(lat, lon);
-  // Fetch all hospitals saved in the current 10km tile
-  const result = await db.getAllAsync(
-    `SELECT * FROM EmergencyServices WHERE tile_id = ? LIMIT 5`, 
-    [currentTileId]
-  );
-  return result;
+  return await db.getAllAsync(`SELECT * FROM EmergencyServices WHERE tile_id = ? LIMIT 5`, [currentTileId]);
 };
