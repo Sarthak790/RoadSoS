@@ -66,7 +66,16 @@ export const performMemoryCleanup = async () => {
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// 1. THE MUTEX LOCK: Prevents transaction collisions
+let isSyncInProgress = false;
+
 export const syncAreaIfNeeded = async (lat, lon) => {
+  if (isSyncInProgress) {
+    console.log("🚦 Smart Vault is currently busy. Skipping duplicate GPS trigger.");
+    return;
+  }
+  isSyncInProgress = true; // Lock the door
+
   try {
     const now = Date.now();
 
@@ -191,10 +200,46 @@ export const syncAreaIfNeeded = async (lat, lon) => {
     console.log(`Safety Net secured. Vault updated with ${downloadedData.elements.length} locations.`);
   } catch (error) {
     console.log("Background sync failed:", error.message);
+  } finally {
+    // 3. THE RELEASE: Always unlock the door when finished, even if it crashes!
+    isSyncInProgress = false;
   }
 };
 
+// 1. Re-introduce the Math Engine for the database retrieval
+const getDistanceFromLatLonInKm = (lat1, lon1, lat2, lon2) => {
+  const R = 6371; 
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a = 
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) * Math.sin(dLon / 2) * Math.sin(dLon / 2); 
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); 
+  return R * c; 
+};
+
+// 2. The Upgraded Retrieval Function
 export const getLocalEmergencyServices = async (lat, lon) => {
-  const currentTileId = getTileId(lat, lon);
-  return await db.getAllAsync(`SELECT * FROM EmergencyServices WHERE tile_id = ? LIMIT 5`, [currentTileId]);
+  try {
+    const currentTileId = getTileId(lat, lon);
+    
+    // Fetch ALL services in the current tile (no random limits yet)
+    const rows = await db.getAllAsync(`SELECT * FROM EmergencyServices WHERE tile_id = ?`, [currentTileId]);
+    
+    // THE FIX: Inject the missing 'distance' property the SMS engine relies on
+    const processedServices = rows.map(row => ({
+        ...row,
+        distance: getDistanceFromLatLonInKm(lat, lon, row.lat, row.lon)
+    }));
+
+    // Sort the array so the closest facilities are genuinely at the top
+    processedServices.sort((a, b) => a.distance - b.distance);
+    
+    // Return the 5 closest, perfectly formatted objects
+    return processedServices.slice(0, 5);
+    
+  } catch (error) {
+    console.error("Database Retrieval Failed:", error);
+    return [];
+  }
 };
