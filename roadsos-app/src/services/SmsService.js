@@ -1,37 +1,52 @@
 import * as SMS from 'expo-sms';
 
-export const sendEmergencySMS = async (liveCoords, nearestServices, emergencyContacts = ['112']) => {
+export const sendEmergencySMS = async (liveCoords, nearestServices, profile = null, defaultContacts = ['112']) => {
     try {
-        // 1. Check if the device is actually a phone with SMS capabilities
+        // 1. Hardware Check: Prevents silent crashes on Emulators/Web
         const isAvailable = await SMS.isAvailableAsync();
         if (!isAvailable) {
-            throw new Error("SMS is not available on this device (Emulator or Tablet without SIM).");
+            console.error("SMS is not available on this device (Emulator or Web).");
+            return false;
         }
 
-        // 2. Format a clickable Google Maps link using their live GPS
-        const mapsLink = `https://www.google.com/maps/search/?api=1&query=${liveCoords.latitude},${liveCoords.longitude}`;
+        // 2. Format a clickable Google Maps link
+        const mapsLink = `https://maps.google.com/?q=${liveCoords.latitude},${liveCoords.longitude}`;
 
-        // 3. Compress the offline database results into a tight text string
-        let servicesText = "\n\nNearest Offline Facilities Found:\n";
-        
-        // Take the top 3 results and format them
-        nearestServices.slice(0, 3).forEach((service, index) => {
-            servicesText += `${index + 1}. ${service.name} (${service.distance.toFixed(1)}km away)\nPh: ${service.phone}\n`;
-        });
+        // 3. Compress the offline database results (Top 3)
+        let servicesText = "\n\nNearest Offline Facilities:\n";
+        if (nearestServices && nearestServices.length > 0) {
+            nearestServices.slice(0, 3).forEach((service, index) => {
+                const distStr = service.distance ? ` (${service.distance.toFixed(1)}km)` : '';
+                const phoneStr = service.phone ? ` - Ph: ${service.phone}` : '';
+                servicesText += `${index + 1}. ${service.name}${distStr}${phoneStr}\n`;
+            });
+        } else {
+            servicesText += "None found in immediate offline radius.\n";
+        }
 
-        // 4. Construct the final SOS message payload
-        const messagePayload = `🚨 RoadSOS EMERGENCY 🚨\nI need immediate assistance. My exact GPS location is:\n${mapsLink}${servicesText}`;
+        // 4. Construct the Payload
+        let messagePayload = `🚨 RoadSOS EMERGENCY 🚨\n`;
+        if (profile) {
+            messagePayload += `Driver: ${profile.name || 'Unknown'}\n`;
+            messagePayload += `Vitals: Blood ${profile.bloodType || 'N/A'} | Veh: ${profile.vehicleId || 'N/A'}\n`;
+        }
+        messagePayload += `Loc: ${mapsLink}${servicesText}`;
 
-        // 5. Open the native SMS app with the payload pre-filled
-        const { result } = await SMS.sendSMSAsync(
-            emergencyContacts, // You can replace '112' with a family member's number for testing
-            messagePayload
-        );
+        // 5. Gather recipients
+        const recipients = [...defaultContacts];
+        if (profile?.emergencyPhone) {
+            recipients.push(profile.emergencyPhone);
+        }
 
-        return result;
+        console.log("Dispatching Payload:\n", messagePayload);
+
+        // 6. Fire the native SMS UI
+        const { result } = await SMS.sendSMSAsync(recipients, messagePayload);
+
+        return result === 'sent' || result === 'unknown';
 
     } catch (error) {
         console.error("SMS Dispatch Failed:", error);
-        throw error;
+        return false;
     }
 };
