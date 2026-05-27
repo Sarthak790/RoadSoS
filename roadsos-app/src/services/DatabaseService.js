@@ -1,5 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 import * as Location from 'expo-location';
+import NetInfo from '@react-native-community/netinfo';
+import { DeviceEventEmitter } from 'react-native'; // 🚨 Added to alert UI when vault updates
 
 const db = SQLite.openDatabaseSync('roadsos_global_vault.db');
 
@@ -46,9 +48,35 @@ export const get9TileSafetyNet = (lat, lon) => {
   return tiles;
 };
 
+// 🚨 NEW HELPER: Checks if a specific tile is downloaded AND fresh
+export const isTileReadyOffline = async (lat, lon) => {
+  const tileId = getTileId(lat, lon);
+  const now = Date.now();
+  const STALE_DATA_THRESHOLD = now - (30 * 24 * 60 * 60 * 1000); // 30 Days
+
+  try {
+    const tileRecord = await db.getFirstAsync(
+      `SELECT last_accessed FROM MapTiles WHERE tile_id = ?`, 
+      [tileId]
+    );
+
+    // If the tile doesn't exist, or if it's older than 30 days, it's NOT ready.
+    if (!tileRecord || tileRecord.last_accessed < STALE_DATA_THRESHOLD) {
+      return false; 
+    }
+
+    // The tile exists and is fresh! Offline buffer is ready.
+    return true; 
+
+  } catch (error) {
+    console.log("Error checking offline tile status:", error);
+    return false;
+  }
+};
+
 export const performMemoryCleanup = async () => {
   const now = Date.now();
-  // 14 days cleanup
+  // 14 days cleanup for unprotected tiles
   const cutoffTime = now - (14 * 24 * 60 * 60 * 1000); 
 
   await db.runAsync(
@@ -69,6 +97,7 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 export const syncAreaIfNeeded = async (lat, lon) => {
   try {
     const now = Date.now();
+    const STALE_DATA_THRESHOLD = now - (30 * 24 * 60 * 60 * 1000); // 30 Days
 
     // 1. Predictive Biasing (The Speed Gate)
     const lastLoc = await Location.getLastKnownPositionAsync({}).catch(() => null);
@@ -85,32 +114,50 @@ export const syncAreaIfNeeded = async (lat, lon) => {
       console.log(`Highway speeds detected. Shifting safety net forward.`);
     }
 
-    // 2. Hometown Protection & Identifying Missing Tiles
+    // 2. Hometown Protection & Stale Data Check
     const nineTiles = get9TileSafetyNet(targetLat, targetLon);
-    const missingTiles = [];
+    const missingOrStaleTiles = [];
     
     for (const tId of nineTiles) {
       const existingTile = await db.getFirstAsync(`SELECT * FROM MapTiles WHERE tile_id = ?`, [tId]);
+      
       if (existingTile) {
-        const newVisitCount = existingTile.visit_count + 1;
-        const isProtected = newVisitCount >= 3 ? 1 : 0;
-        await db.runAsync(`UPDATE MapTiles SET last_accessed = ?, visit_count = ?, is_protected = ? WHERE tile_id = ?`, 
-          [now, newVisitCount, isProtected, tId]);
+        // If the tile exists but is older than 30 days, flag it for a re-download!
+        if (existingTile.last_accessed < STALE_DATA_THRESHOLD) {
+            missingOrStaleTiles.push(tId);
+        } else {
+            // Tile is fresh. Update it so it doesn't get cleaned up.
+            const newVisitCount = existingTile.visit_count + 1;
+            const isProtected = newVisitCount >= 3 ? 1 : 0;
+            await db.runAsync(`UPDATE MapTiles SET last_accessed = ?, visit_count = ?, is_protected = ? WHERE tile_id = ?`, 
+              [now, newVisitCount, isProtected, tId]);
+        }
       } else {
-        missingTiles.push(tId);
+        missingOrStaleTiles.push(tId);
       }
     }
 
-    if (missingTiles.length === 0) return; // All 9 grids are safely in the vault!
+    // If all 9 grids are in the vault AND they are fresh, stop here!
+    if (missingOrStaleTiles.length === 0) {
+        console.log("[Watcher] All 9 tiles are fresh and secured. No network needed.");
+        return; 
+    }
 
-    // 3. Strict Bounding Box Fetch
+    // 3. FAIL-FAST NETWORK CHECK (Don't waste battery if offline)
+    const networkState = await NetInfo.fetch();
+    if (!networkState.isConnected) {
+        console.log("[Watcher] Device is offline. Relying strictly on existing Vault data.");
+        return; 
+    }
+
+    // Strict Bounding Box Fetch
     await performMemoryCleanup();
     
-    // Adjusted bounding box for city density
-    const minLat = targetLat - 0.05;
-    const minLon = targetLon - 0.05;
-    const maxLat = targetLat + 0.05;
-    const maxLon = targetLon + 0.05;
+    // Adjusted bounding box to cover the entire 9-Tile Grid (approx 30km x 30km)
+    const minLat = targetLat - 0.15;
+    const minLon = targetLon - 0.15;
+    const maxLat = targetLat + 0.15;
+    const maxLon = targetLon + 0.15;
 
     // Overpass query configured to catch nodes, ways, and relations
     const overpassQuery = `[out:json][timeout:25]; (nwr["amenity"~"^(hospital|police)$"](${minLat},${minLon},${maxLat},${maxLon});); out center;`;
@@ -126,34 +173,30 @@ export const syncAreaIfNeeded = async (lat, lon) => {
       try {
         console.log(`[Watcher] Contacting OSM Server ${i}...`);
         
-        // 🚨 THE FIX: Manually create a timeout controller that React Native supports
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 25000); // 25 seconds
         
         const response = await fetch(overpassServers[i], {
           method: 'POST',
-          signal: controller.signal, // Attach our manual abort signal
+          signal: controller.signal,
           headers: {
             'User-Agent': 'RoadSOS-App/1.0 (contact: akr62225@gmail.com)',
             'Content-Type': 'application/x-www-form-urlencoded'
           },
-          // Send the query inside the body instead of the URL
           body: `data=${encodeURIComponent(overpassQuery)}`
         });
         
-        // Clear the timeout if we got a response before 25 seconds
         clearTimeout(timeoutId);
 
         if (response.ok) {
           downloadedData = await response.json();
           console.log(`[Watcher] Success on Server ${i}!`);
-          break; // We got the data, stop looping!
+          break; 
         } else {
           console.log(`[Watcher] Server ${i} rejected request. Status: ${response.status}`);
-          await sleep(1500); // Wait before hammering the next server
+          await sleep(1500); 
         }
       } catch (error) { 
-        // Differentiate between our custom timeout and a standard network crash
         if (error.name === 'AbortError') {
           console.log(`[Watcher] Server ${i} timed out after 25 seconds.`);
         } else {
@@ -163,7 +206,6 @@ export const syncAreaIfNeeded = async (lat, lon) => {
       }
     }
 
-    // Safety check to ensure elements exist to prevent a crash in the next step
     if (!downloadedData || !downloadedData.elements) {
        console.log("⚠️ All OSM servers failed to provide data.");
        return; 
@@ -171,16 +213,28 @@ export const syncAreaIfNeeded = async (lat, lon) => {
 
     // 4. Atomic Commit
     await db.withTransactionAsync(async () => {
-      for (const tId of missingTiles) {
-        await db.runAsync(`INSERT OR IGNORE INTO MapTiles (tile_id, last_accessed, visit_count, is_protected) VALUES (?, ?, 1, 0)`, [tId, now]);
+      
+      // 🚨 FIX: Force update ALL 9 tiles in the grid to show they were just synced
+      for (const tId of nineTiles) {
+        await db.runAsync(`
+          INSERT INTO MapTiles (tile_id, last_accessed, visit_count, is_protected) 
+          VALUES (?, ?, 1, 0)
+          ON CONFLICT(tile_id) DO UPDATE SET 
+          last_accessed = excluded.last_accessed,
+          visit_count = visit_count + 1
+        `, [tId, now]);
       }
+
+      // Sort the downloaded hospitals into their correct tile buckets
       for (const el of downloadedData.elements) {
         const pointLat = el.lat || el.center?.lat;
         const pointLon = el.lon || el.center?.lon;
         
         if (!pointLat || !pointLon) continue; 
 
+        // 🚨 This is where the magic happens: Sorting data into the exact tile ID
         const accurateTileId = getTileId(pointLat, pointLon);
+        
         await db.runAsync(`
           INSERT OR IGNORE INTO EmergencyServices (id, tile_id, type, name, lat, lon) 
           VALUES (?, ?, ?, ?, ?, ?)
@@ -189,6 +243,11 @@ export const syncAreaIfNeeded = async (lat, lon) => {
     });
 
     console.log(`Safety Net secured. Vault updated with ${downloadedData.elements.length} locations.`);
+    
+    // 🚨 NEW: Shoot the flare to the UI so it knows to re-render!
+    const syncedTileId = getTileId(targetLat, targetLon);
+    DeviceEventEmitter.emit('VaultUpdated', syncedTileId);
+
   } catch (error) {
     console.log("Background sync failed:", error.message);
   }
