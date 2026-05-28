@@ -1,30 +1,45 @@
 import * as SMS from 'expo-sms';
 
-export const sendEmergencySMS = async (liveCoords, nearestServices, profile = null, defaultContacts = ['112']) => {
+export const sendEmergencySMS = async (liveCoords, nearestServices, profile = null, defaultContacts = ['9876543210']) => {
     try {
-        // 1. Hardware Check: Prevents silent crashes on Emulators/Web
         const isAvailable = await SMS.isAvailableAsync();
         if (!isAvailable) {
-            console.error("SMS is not available on this device (Emulator or Web).");
+            console.error("SMS is not available on this device.");
             return false;
         }
 
-        // 2. Format a clickable Google Maps link
+        // THE MAPS FIX: Perfectly formatted string literal!
         const mapsLink = `https://maps.google.com/?q=${liveCoords.latitude},${liveCoords.longitude}`;
 
-        // 3. Compress the offline database results (Top 3)
+        // THE SMART VARIETY FIX
         let servicesText = "\n\nNearest Offline Facilities:\n";
+        
         if (nearestServices && nearestServices.length > 0) {
-            nearestServices.slice(0, 3).forEach((service, index) => {
-                const distStr = service.distance ? ` (${service.distance.toFixed(1)}km)` : '';
+            // Find the closest of each distinct category
+            const med = nearestServices.find(s => ['hospital', 'pharmacy'].includes(s.type));
+            const pol = nearestServices.find(s => ['police', 'fire_station'].includes(s.type));
+            const mech = nearestServices.find(s => ['car_repair', 'motorcycle_repair', 'fuel'].includes(s.type));
+
+            // Combine them, filter out any missing ones, and ensure we always have 3 items
+            let bestThree = [med, pol, mech].filter(Boolean);
+            if (bestThree.length < 3) {
+                const extras = nearestServices.filter(s => !bestThree.includes(s));
+                bestThree = [...bestThree, ...extras].slice(0, 3);
+            }
+
+            bestThree.forEach((service, index) => {
+                const distStr = service.distance !== undefined ? ` (${service.distance.toFixed(1)}km)` : '';
                 const phoneStr = service.phone ? ` - Ph: ${service.phone}` : '';
-                servicesText += `${index + 1}. ${service.name}${distStr}${phoneStr}\n`;
+                
+                // Add tiny emoji tags so the text message is readable
+                const tag = service.type === 'fuel' ? '⛽' : service.type.includes('repair') ? '🔧' : service.type === 'police' ? '🚓' : '🏥';
+                
+                servicesText += `${index + 1}. [${tag}] ${service.name}${distStr}${phoneStr}\n`;
             });
         } else {
             servicesText += "None found in immediate offline radius.\n";
         }
 
-        // 4. Construct the Payload
         let messagePayload = `🚨 RoadSOS EMERGENCY 🚨\n`;
         if (profile) {
             messagePayload += `Driver: ${profile.name || 'Unknown'}\n`;
@@ -32,7 +47,6 @@ export const sendEmergencySMS = async (liveCoords, nearestServices, profile = nu
         }
         messagePayload += `Loc: ${mapsLink}${servicesText}`;
 
-        // 5. Gather recipients
         const recipients = [...defaultContacts];
         if (profile?.emergencyPhone) {
             recipients.push(profile.emergencyPhone);
@@ -40,9 +54,7 @@ export const sendEmergencySMS = async (liveCoords, nearestServices, profile = nu
 
         console.log("Dispatching Payload:\n", messagePayload);
 
-        // 6. Fire the native SMS UI
         const { result } = await SMS.sendSMSAsync(recipients, messagePayload);
-
         return result === 'sent' || result === 'unknown';
 
     } catch (error) {

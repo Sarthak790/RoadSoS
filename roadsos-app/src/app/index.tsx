@@ -217,6 +217,20 @@ export default function HomeScreen() {
     }
   };
 
+  // UI Dictionary for formatting raw OSM tags
+  const getServiceUI = (type: string) => {
+    switch(type) {
+      case 'hospital': return { label: '🏥 HOSPITAL', color: '#D32F2F' };
+      case 'police': return { label: '🚓 POLICE', color: '#1E88E5' };
+      case 'fire_station': return { label: '🚒 FIRE DEPT', color: '#E65100' };
+      case 'pharmacy': return { label: '💊 PHARMACY', color: '#43A047' };
+      case 'fuel': return { label: '⛽ PETROL PUMP', color: '#FDD835' };
+      case 'car_repair':
+      case 'motorcycle_repair': return { label: '🔧 MECHANIC', color: '#8D6E63' };
+      default: return { label: `🚨 ${type.toUpperCase()}`, color: '#666' };
+    }
+  };
+
   // ==========================================
   // UI RENDERING
   // ==========================================
@@ -285,18 +299,34 @@ export default function HomeScreen() {
                 <FlatList
                   data={nearbyServices}
                   keyExtractor={(item) => item.id.toString()}
-                  renderItem={({ item }) => (
-                    <View style={styles.card}>
+                  renderItem={({ item }) => {
+                  const uiTheme = getServiceUI(item.type);
+                  
+                  return (
+                    <View style={[styles.card, { borderLeftWidth: 5, borderLeftColor: uiTheme.color }]}>
                       <Text style={styles.cardTitle}>{item.name}</Text>
-                      <Text style={styles.cardType}>{item.type.toUpperCase()}</Text>
+                      
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
+                        <Text style={[styles.cardType, { color: uiTheme.color }]}>
+                          {uiTheme.label}
+                        </Text>
+                        
+                        {item.distance !== undefined && item.distance !== null ? (
+                          <Text style={{ fontSize: 13, color: '#666', fontWeight: 'bold' }}>
+                            {item.distance.toFixed(1)} km
+                          </Text>
+                        ) : null}
+                        
+                      </View>
                     </View>
-                  )}
-                />
-              )}
-            </View>
+                  );
+                }}
+              />
+            )}
           </View>
+        </View>
           
-          {/* THE FIX: Button is now completely completely separated from the container padding! */}
+          {/* THE FIX: Button is now completely separated from the container padding! */}
           <View style={styles.floatingButtonContainer}>
             <TouchableOpacity 
               style={styles.floatingButton} 
@@ -313,8 +343,7 @@ export default function HomeScreen() {
       )}
 
     </View>
-  );
-}
+  );}
 
 // ==========================================
 // STYLESHEET

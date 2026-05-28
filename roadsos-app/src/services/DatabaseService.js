@@ -122,7 +122,11 @@ export const syncAreaIfNeeded = async (lat, lon) => {
     const maxLon = targetLon + 0.05;
 
     // Overpass query configured to catch nodes, ways, and relations
-    const overpassQuery = `[out:json][timeout:25]; (nwr["amenity"~"^(hospital|police)$"](${minLat},${minLon},${maxLat},${maxLon});); out center;`;
+    // Upgraded Overpass Query: Hospitals, Police, Fire, Pharmacies, Petrol Pumps, and Mechanics
+    const overpassQuery = `[out:json][timeout:25]; (
+      nwr["amenity"~"^(hospital|police|fuel|fire_station|pharmacy)$"](${minLat},${minLon},${maxLat},${maxLon});
+      nwr["shop"~"^(car_repair|motorcycle_repair)$"](${minLat},${minLon},${maxLat},${maxLon});
+    ); out center;`;
     
     const overpassServers = [
       'https://overpass-api.de/api/interpreter', 
@@ -190,10 +194,15 @@ export const syncAreaIfNeeded = async (lat, lon) => {
         if (!pointLat || !pointLon) continue; 
 
         const accurateTileId = getTileId(pointLat, pointLon);
+        // Safely extract the type (whether it's an amenity or a shop)
+        const facilityType = el.tags.amenity || el.tags.shop || "emergency";
+        
+        // Provide a smarter default name if OSM doesn't have one
+        const facilityName = el.tags.name || `Local ${facilityType.replace('_', ' ')}`;
         await db.runAsync(`
           INSERT OR IGNORE INTO EmergencyServices (id, tile_id, type, name, lat, lon) 
           VALUES (?, ?, ?, ?, ?, ?)
-        `, [el.id.toString(), accurateTileId, el.tags.amenity, el.tags.name || "Emergency Facility", pointLat, pointLon]);
+        `, [el.id.toString(), accurateTileId, facilityType, facilityName, pointLat, pointLon]);
       }
     });
 
@@ -236,7 +245,7 @@ export const getLocalEmergencyServices = async (lat, lon) => {
     processedServices.sort((a, b) => a.distance - b.distance);
     
     // Return the 5 closest, perfectly formatted objects
-    return processedServices.slice(0, 5);
+    return processedServices.slice(0, 15);
     
   } catch (error) {
     console.error("Database Retrieval Failed:", error);
