@@ -1,16 +1,14 @@
 import * as Location from 'expo-location';
+import { Linking, Platform, Alert } from 'react-native';
 
 export const getLiveLocation = async () => {
     try {
-        // 1. Ask the user for emergency GPS access
         const { status } = await Location.requestForegroundPermissionsAsync();
         
         if (status !== 'granted') {
             throw new Error('Permission to access location was denied. RoadSOS requires GPS to function.');
         }
 
-        // 2. The Emergency Timeout Race
-        // We try to get the HIGHEST accuracy, but if it takes longer than 6 seconds, we abort and use the fallback.
         const locationPromise = Location.getCurrentPositionAsync({
             accuracy: Location.Accuracy.Highest,
         });
@@ -21,17 +19,12 @@ export const getLiveLocation = async () => {
 
         let location;
         try {
-            // Race the GPS fetch against the 6-second timer
             location = await Promise.race([locationPromise, timeoutPromise]);
         } catch (error) {
             if (error.message === 'GPS_TIMEOUT') {
                 console.log("⚠️ Perfect GPS took too long. Falling back to Last Known Location.");
-                // Fallback: Instantly grabs the last ping the phone recorded (usually accurate enough)
                 location = await Location.getLastKnownPositionAsync({});
-                
-                if (!location) {
-                    throw new Error("Could not determine location even with fallback.");
-                }
+                if (!location) throw new Error("Could not determine location even with fallback.");
             } else {
                 throw error;
             }
@@ -40,7 +33,6 @@ export const getLiveLocation = async () => {
         return {
             latitude: location.coords.latitude,
             longitude: location.coords.longitude,
-            // Returning accuracy is helpful so your UI can say "Accurate to 5 meters" vs "Accurate to 100 meters"
             accuracy: location.coords.accuracy 
         };
 
@@ -49,3 +41,26 @@ export const getLiveLocation = async () => {
         throw error;
     }
 };
+
+// ==========================================
+// OS-LEVEL NAVIGATION HANDOFF
+// ==========================================
+export const startNavigation = async (lat, lng) => {
+    const iosUrl = `maps://app?daddr=${lat},${lng}&dirflg=d`;
+    const androidUrl = `google.navigation:q=${lat},${lng}`;
+    
+    const url = Platform.OS === 'ios' ? iosUrl : androidUrl;
+  
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (supported) {
+        await Linking.openURL(url);
+      } else {
+        const browserUrl = `https://www.google.com/maps/dir/?api=1&destination=$${lat},${lng}`;
+        await Linking.openURL(browserUrl);
+      }
+    } catch (error) {
+      Alert.alert("Error", "Could not open the navigation app.");
+      console.error("Navigation Handoff Error:", error);
+    }
+  };
