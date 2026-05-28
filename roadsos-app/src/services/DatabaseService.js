@@ -1,68 +1,71 @@
 import * as SQLite from 'expo-sqlite';
 import * as Location from 'expo-location';
 import NetInfo from '@react-native-community/netinfo';
-import { DeviceEventEmitter } from 'react-native';
+import { DeviceEventEmitter, Platform } from 'react-native';
 
 // 🚨 1. IMPORT THE PRE-PACKAGED CITY DATA
 // Ensure this path correctly points to where you created cities_seed.json
 import seedData from '../../assets/data/cities_seed.json'; 
 
-const db = SQLite.openDatabaseSync('roadsos_global_vault.db');
+let db = null;
+if (Platform.OS !== 'web') {
+  db = SQLite.openDatabaseSync('roadsos_vault_v5.db');
+}
+
+let initPromise = null;
+
+
 
 export const initializeSmartVault = async () => {
-  // Explicitly enable Foreign Keys
-  await db.execAsync('PRAGMA foreign_keys = ON;');
-
-  // Create Tables
-  await db.execAsync(`
-    CREATE TABLE IF NOT EXISTS MapTiles (
-      tile_id TEXT PRIMARY KEY,
-      last_accessed INTEGER,
-      visit_count INTEGER DEFAULT 1,
-      is_protected BOOLEAN DEFAULT 0
-    );
-    CREATE TABLE IF NOT EXISTS EmergencyServices (
-      id TEXT PRIMARY KEY,
-      tile_id TEXT,
-      type TEXT,
-      name TEXT,
-      lat REAL,
-      lon REAL,
-      phone TEXT,
-      FOREIGN KEY(tile_id) REFERENCES MapTiles(tile_id) ON DELETE CASCADE
-    );
-  `);
-
-  // 🚨 2. THE SEED INJECTION: Check if this is the very first boot
-  const hasSeeded = await db.getFirstAsync(`SELECT * FROM MapTiles LIMIT 1`);
-  
-  if (!hasSeeded && seedData && seedData.tiles) {
-    console.log("First boot detected! Injecting offline Top Cities...");
-    const now = Date.now();
-    
-    await db.withTransactionAsync(async () => {
-      // Inject the protected tiles (They won't be deleted by the 14-day cleanup!)
-      for (const tId of seedData.tiles) {
-        await db.runAsync(`
-          INSERT INTO MapTiles (tile_id, last_accessed, visit_count, is_protected) 
-          VALUES (?, ?, 100, 1)
-        `, [tId, now]);
-      }
-      
-      // Inject the actual hospitals and police stations
-      if (seedData.services) {
-        for (const s of seedData.services) {
-          await db.runAsync(`
-            INSERT INTO EmergencyServices (id, tile_id, type, name, lat, lon, phone) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-          `, [s.id, s.tile_id, s.type, s.name, s.lat, s.lon, s.phone || null]);
-        }
-      }
-    });
-    console.log("Pre-packaged Offline Cities successfully locked in the Vault.");
-  } else {
-    console.log("Smart Vault Initialized (Already Seeded).");
+  if (initPromise) {
+    console.log("⏳ Vault initialization already in progress, waiting for it to finish...");
+    return initPromise; // Forces duplicate calls to WAIT instead of skipping ahead!
   }
+
+  initPromise = (async () => {
+    try {
+      await db.execAsync('PRAGMA foreign_keys = ON;');
+      await db.execAsync(`
+        CREATE TABLE IF NOT EXISTS MapTiles (
+          tile_id TEXT PRIMARY KEY, last_accessed INTEGER,
+          visit_count INTEGER DEFAULT 1, is_protected BOOLEAN DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS EmergencyServices (
+          id TEXT PRIMARY KEY, tile_id TEXT, type TEXT, name TEXT,
+          lat REAL, lon REAL, phone TEXT,
+          FOREIGN KEY(tile_id) REFERENCES MapTiles(tile_id) ON DELETE CASCADE
+        );
+      `);
+
+      const hasSeeded = await db.getFirstAsync(`SELECT * FROM MapTiles LIMIT 1`);
+      
+      if (!hasSeeded && seedData && seedData.tiles) {
+        console.log("First boot detected! Injecting offline Top Cities...");
+        const now = Date.now();
+        
+        // Removed withTransactionAsync here!
+        for (const tId of seedData.tiles) {
+          await db.runAsync(`INSERT INTO MapTiles (tile_id, last_accessed, visit_count, is_protected) VALUES (?, ?, 100, 1)`, [tId, now]);
+        }
+        
+        if (seedData.services) {
+          for (const s of seedData.services) {
+            await db.runAsync(`
+              INSERT OR IGNORE INTO EmergencyServices (id, tile_id, type, name, lat, lon, phone) 
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `, [s.id, s.tile_id, s.type, s.name, s.lat, s.lon, s.phone || null]);
+          }
+        }
+        console.log("✅ Pre-packaged Offline Cities successfully locked in the Vault.");
+      } else {
+        console.log("✅ Smart Vault Initialized (Already Seeded).");
+      }
+    } catch (error) {
+      console.error("Vault Initialization Error:", error);
+    }
+  })();
+
+  return initPromise;
 };
 
 export const getTileId = (lat, lon) => `lat${Math.round(lat * 10)}_lon${Math.round(lon * 10)}`;
@@ -103,6 +106,7 @@ export const performMemoryCleanup = async () => {
   const now = Date.now();
   const cutoffTime = now - (14 * 24 * 60 * 60 * 1000); 
 
+  // 1. Delete expired tiles
   await db.runAsync(
     `DELETE FROM MapTiles WHERE is_protected = 0 AND last_accessed < ?`, 
     [cutoffTime]
@@ -111,7 +115,16 @@ export const performMemoryCleanup = async () => {
   const tileCountRow = await db.getFirstAsync(`SELECT COUNT(*) as count FROM MapTiles`);
   
   if (tileCountRow && tileCountRow.count > 100) { 
-    await db.runAsync(`DELETE FROM MapTiles WHERE is_protected = 0 ORDER BY last_accessed ASC LIMIT 1`);
+    // THE FIX: Use a sub-query to safely find and delete the absolute oldest tile
+    await db.runAsync(`
+      DELETE FROM MapTiles 
+      WHERE tile_id = (
+        SELECT tile_id FROM MapTiles 
+        WHERE is_protected = 0 
+        ORDER BY last_accessed ASC 
+        LIMIT 1
+      )
+    `);
   }
 };
 
@@ -120,6 +133,9 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 let isSyncInProgress = false;
 
 export const syncAreaIfNeeded = async (lat, lon) => {
+  // THE FIX 1: Force the background sync to wait until initialization is 100% finished
+  await initializeSmartVault();
+
   if (isSyncInProgress) {
     console.log("🚦 Smart Vault is currently busy. Skipping duplicate GPS trigger.");
     return;
@@ -182,7 +198,10 @@ export const syncAreaIfNeeded = async (lat, lon) => {
     const maxLat = targetLat + 0.15;
     const maxLon = targetLon + 0.15;
 
-    const overpassQuery = `[out:json][timeout:25]; (nwr["amenity"~"^(hospital|police)$"](${minLat},${minLon},${maxLat},${maxLon});); out center;`;
+    const overpassQuery = `[out:json][timeout:25]; (
+      nwr["amenity"~"^(hospital|police|fuel|fire_station|pharmacy)$"](${minLat},${minLon},${maxLat},${maxLon});
+      nwr["shop"~"^(car_repair|motorcycle_repair)$"](${minLat},${minLon},${maxLat},${maxLon});
+    ); out center;`;
     
     const overpassServers = [
       'https://overpass-api.de/api/interpreter', 
@@ -233,31 +252,39 @@ export const syncAreaIfNeeded = async (lat, lon) => {
        return; 
     }
 
-    await db.withTransactionAsync(async () => {
-      for (const tId of nineTiles) {
-        await db.runAsync(`
-          INSERT INTO MapTiles (tile_id, last_accessed, visit_count, is_protected) 
-          VALUES (?, ?, 1, 0)
-          ON CONFLICT(tile_id) DO UPDATE SET 
-          last_accessed = excluded.last_accessed,
-          visit_count = visit_count + 1
-        `, [tId, now]);
-      }
+    // THE FIX 2: Completely removed db.withTransactionAsync!
+    for (const tId of nineTiles) {
+      await db.runAsync(`
+        INSERT INTO MapTiles (tile_id, last_accessed, visit_count, is_protected) 
+        VALUES (?, ?, 1, 0)
+        ON CONFLICT(tile_id) DO UPDATE SET 
+        last_accessed = excluded.last_accessed,
+        visit_count = visit_count + 1
+      `, [tId, now]);
+    }
 
-      for (const el of downloadedData.elements) {
-        const pointLat = el.lat || el.center?.lat;
-        const pointLon = el.lon || el.center?.lon;
-        
-        if (!pointLat || !pointLon) continue; 
+    for (const el of downloadedData.elements) {
+      const pointLat = el.lat || el.center?.lat;
+      const pointLon = el.lon || el.center?.lon;
+      if (!pointLat || !pointLon) continue; 
 
-        const accurateTileId = getTileId(pointLat, pointLon);
-        
-        await db.runAsync(`
-          INSERT OR IGNORE INTO EmergencyServices (id, tile_id, type, name, lat, lon) 
-          VALUES (?, ?, ?, ?, ?, ?)
-        `, [el.id.toString(), accurateTileId, facilityType, facilityName, pointLat, pointLon]);
-      }
-    });
+      const accurateTileId = getTileId(pointLat, pointLon);
+      const currentTime = Date.now(); // Creating a fresh timestamp variable here to be safe
+      
+      // Ensure the tile exists in the MapTiles table FIRST!
+      await db.runAsync(`
+        INSERT OR IGNORE INTO MapTiles (tile_id, last_accessed, visit_count, is_protected) 
+        VALUES (?, ?, 1, 0)
+      `, [accurateTileId, currentTime]);
+
+      const facilityType = el.tags?.amenity || el.tags?.shop || "emergency";
+      const facilityName = el.tags?.name || `Local ${facilityType.replace('_', ' ')}`;
+      
+      await db.runAsync(`
+        INSERT OR IGNORE INTO EmergencyServices (id, tile_id, type, name, lat, lon) 
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [el.id.toString(), accurateTileId, facilityType, facilityName, pointLat, pointLon]);
+    }
 
     console.log(`Safety Net secured. Vault updated with ${downloadedData.elements.length} locations.`);
     
@@ -286,6 +313,7 @@ const getDistanceFromLatLonInKm = (lat1, lon1, lat2, lon2) => {
 
 // 🚨 3. THE UPGRADED 9-TILE RETRIEVAL FUNCTION
 export const getLocalEmergencyServices = async (lat, lon) => {
+  await initializeSmartVault();
   try {
     // We grab the 9 tiles encompassing the user's location (approx 30x30km radius)
     const nineTiles = get9TileSafetyNet(lat, lon);
@@ -306,7 +334,7 @@ export const getLocalEmergencyServices = async (lat, lon) => {
     processedServices.sort((a, b) => a.distance - b.distance);
     
     // Return the 5 absolute closest
-    return processedServices.slice(0, 5);
+    return processedServices.slice(0, 30);
     
   } catch (error) {
     console.error("Database Retrieval Failed:", error);

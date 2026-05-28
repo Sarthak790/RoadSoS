@@ -29,38 +29,30 @@ interface UserProfile {
   contact3: string;
 }
 
-// ─── Design Tokens ────────────────────────────────────────────────────────────
 const COLORS = {
-  danger:       '#FF2D2D',
-  dangerDark:   '#C0001A',
-  dangerGlow:   'rgba(255,45,45,0.18)',
-  dangerMuted:  'rgba(255,45,45,0.10)',
-  amber:        '#FF9500',
-  amberDark:    '#C46D00',
-  amberGlow:    'rgba(255,149,0,0.18)',
-  amberMuted:   'rgba(255,149,0,0.10)',
-  safe:         '#30D158',
-  bg:           '#0A0C10',
-  surface:      '#13161C',
-  surfaceRaised:'#1C2028',
-  surfaceBorder:'#252B36',
-  textPrimary:  '#F0F2F5',
-  textSecondary:'#8A93A0',
-  textMuted:    '#4A5260',
-  white:        '#FFFFFF',
-  overlay:      'rgba(0,0,0,0.75)',
+  danger:       '#FF3B30', // Apple Standard Red
+  dangerDark:   '#4A0005',
+  amber:        '#FF9F0A',
+  safe:         '#32D74B',
+  bg:           '#000000', // True OLED Black
+  surface:      '#1C1C1E', // Flat Dark Grey
+  surfaceRaised:'#2C2C2E',
+  surfaceBorder:'#38383A',
+  textPrimary:  '#FFFFFF',
+  textSecondary:'#EBEBF5',
+  textMuted:    '#8E8E93',
   navBlue:      '#0A84FF',
 };
 
-const FONT = {
-  black:   '900' as const,
-  bold:    '700' as const,
-  semi:    '600' as const,
-  medium:  '500' as const,
-  regular: '400' as const,
+const FONT = { 
+  black:   '900' as const, 
+  bold:    '700' as const, 
+  semi:    '600' as const, 
+  medium:  '500' as const, 
+  regular: '400' as const 
 };
 
-const RADIUS = { sm: 8, md: 12, lg: 18, xl: 24, pill: 50 };
+const RADIUS = { sm: 6, md: 10, lg: 16, xl: 20, pill: 999 };
 const SHADOW_DANGER = { shadowColor: COLORS.danger, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.45, shadowRadius: 16, elevation: 12 };
 const SHADOW_AMBER = { shadowColor: COLORS.amber, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.4, shadowRadius: 14, elevation: 10 };
 const SHADOW_SOFT = { shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 4 };
@@ -77,6 +69,7 @@ const StatusBadge = ({ label, color }: { label: string; color: string }) => (
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function HomeScreen() {
   const [isVaultReady, setIsVaultReady]     = useState(false);
+  const [showAllServices, setShowAllServices] = useState(false);
   const [isSyncing, setIsSyncing]           = useState(true);
   const [countdown, setCountdown]           = useState<number | null>(null);
   const [nearbyServices, setNearbyServices] = useState<any[]>([]);
@@ -145,6 +138,9 @@ export default function HomeScreen() {
   // ==========================================
   const [lowBatteryFired, setLowBatteryFired] = useState(false);
   useEffect(() => {
+    // THE FIX: Completely abort the battery hardware check if running in a web browser!
+    if (Platform.OS === 'web') return;
+
     const checkBattery = async (level: number) => {
       if (level > 0 && level <= 0.10 && !lowBatteryFired && isVaultReady) {
         setLowBatteryFired(true);
@@ -230,9 +226,36 @@ export default function HomeScreen() {
   // ==========================================
   // BOOT SEQUENCE
   // ==========================================
+  // ==========================================
+  // BOOT SEQUENCE
+  // ==========================================
   useEffect(() => {
     const bootSystem = async () => {
       try {
+        // 🚨 WEB BYPASS: Skip native SQLite and GPS if running in the browser
+        if (Platform.OS === 'web') {
+          console.log("🌐 Web Environment Detected: Bypassing Native Smart Vault.");
+          
+          const existingProfile = await getUserProfile();
+          if (!existingProfile || !existingProfile.name) {
+            setShowOnboarding(true);
+          } else {
+            setProfile(existingProfile);
+          }
+          
+          // Inject mock data so you can actually test the UI on the web!
+          setNearbyServices([
+            { id: '1', type: 'hospital', name: 'Web Test Hospital', distance: 1.2 },
+            { id: '2', type: 'police', name: 'Web Test Police', distance: 2.5 },
+            { id: '3', type: 'repair', name: 'Web Test Mechanic', distance: 0.8 },
+            { id: '4', type: 'fuel', name: 'Web Test Petrol Pump', distance: 3.1 }
+          ]);
+          
+          setIsVaultReady(true);
+          return; // Exit early before hitting the native hardware!
+        }
+
+        // 📱 NATIVE BOOT SEQUENCE (Android/iOS)
         await initializeSmartVault();
         const existingProfile = await getUserProfile();
         if (!existingProfile || !existingProfile.name) {
@@ -240,23 +263,28 @@ export default function HomeScreen() {
         } else {
           setProfile(existingProfile);
         }
+        
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') {
           Alert.alert("Permission Denied", "GPS is required.");
           setIsSyncing(false);
           return;
         }
+        
         const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
         await syncAreaIfNeeded(location.coords.latitude, location.coords.longitude);
         const localData = await getLocalEmergencyServices(location.coords.latitude, location.coords.longitude);
+        
         setNearbyServices(localData);
         setIsVaultReady(true);
+        
       } catch (error) {
         console.log("Boot error:", error);
       } finally {
         setIsSyncing(false);
       }
     };
+    
     bootSystem();
   }, []);
 
@@ -277,16 +305,25 @@ export default function HomeScreen() {
   // CRASH DETECTOR
   // ==========================================
   useEffect(() => {
+    // THE FIX: Completely abort the G-force crash detector if running in a web browser!
+    if (Platform.OS === 'web') return;
+
     Accelerometer.setUpdateInterval(200);
     const subscription = Accelerometer.addListener(data => {
       if (timerRef.current) return;
       const totalGForce = Math.sqrt(data.x ** 2 + data.y ** 2 + data.z ** 2);
+      
       if (totalGForce > 4.0) {
         const wasDrivingFast = speedBuffer.current.some(speed => speed > 30);
         if (wasDrivingFast) triggerCrashSequence();
       }
     });
-    return () => subscription.remove();
+    
+    return () => {
+      if (subscription && subscription.remove) {
+        subscription.remove();
+      }
+    };
   }, []);
 
   // ==========================================
@@ -314,8 +351,11 @@ export default function HomeScreen() {
     }
   };
 
-  const triggerSOS = async (isLowBattery = false) => {
+  const triggerSOS = async () => {
     try {
+      // 1. Give the user instant feedback that the button actually worked
+      console.log("🚨 Compiling SMS Payload...");
+      
       const networkState = await NetInfo.fetch();
       if (!networkState.isConnected) {
         await AsyncStorage.setItem('PENDING_SOS', JSON.stringify({ queuedAt: Date.now() }));
@@ -323,15 +363,28 @@ export default function HomeScreen() {
         return;
       }
       
+      // 2. Grab the live location
       const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       
+      // 3. Compile the exact list of recipients (112 + your family)
       const activeProfile = profileRef.current;
       const activeNearby = nearbyRef.current;
+      const rawNumbers = ['112', activeProfile.contact1, activeProfile.contact2, activeProfile.contact3];
+      
+      // Strip out any empty strings or nulls
+      const targetNumbers = rawNumbers.filter(num => num && num.trim() !== '');
 
-      const targetNumbers = ['112', activeProfile.contact1, activeProfile.contact2, activeProfile.contact3].filter(num => num && num.trim() !== '');
+      // 4. Fire the payload to the native OS
       const smsSuccess = await sendEmergencySMS(location.coords, activeNearby, activeProfile, targetNumbers);
-      if (!smsSuccess) Alert.alert("Hardware Notice", "Failed to open SMS.");
+      
+      if (!smsSuccess) {
+        Alert.alert(
+          "Hardware Blocked", 
+          "Your phone refused to open the native SMS app. Ensure you are on a physical device, not an emulator!"
+        );
+      }
     } catch (error: any) {
+      console.error("SMS Error:", error);
       Alert.alert("SOS Execution Failure", error.message);
     }
   };
@@ -349,18 +402,47 @@ export default function HomeScreen() {
     }
   };
 
-  const filteredServices = nearbyServices.filter(item => {
-    if (activeTab === 'ALL') return true;
-    if (activeTab === 'HOSPITAL') return item.type.toLowerCase().includes('hospital') || item.type.toLowerCase().includes('clinic');
-    if (activeTab === 'POLICE') return item.type.toLowerCase().includes('police');
-    return true;
-  });
+  // THE UPGRADED FILTERING ENGINE
+  const filteredServices = React.useMemo(() => {
+    let result = [];
+    
+    // 1. Isolate the data based on the active tab
+    if (activeTab === 'ALL') {
+      result = nearbyServices;
+    } else if (activeTab === 'MEDICAL') {
+      result = nearbyServices.filter(item => item.type.includes('hospital') || item.type.includes('clinic') || item.type.includes('pharmacy'));
+    } else if (activeTab === 'POLICE') {
+      result = nearbyServices.filter(item => item.type.includes('police') || item.type.includes('fire'));
+    } else if (activeTab === 'AUTO') {
+      result = nearbyServices.filter(item => item.type.includes('repair') || item.type.includes('fuel'));
+    }
 
+    // 2. Compress the list if "Show More" hasn't been clicked
+    if (!showAllServices) {
+      if (activeTab === 'ALL') {
+        // Group them up and slice the top 3 of each category
+        const meds = result.filter(i => i.type.includes('hospital') || i.type.includes('clinic') || i.type.includes('pharmacy')).slice(0, 3);
+        const pols = result.filter(i => i.type.includes('police') || i.type.includes('fire')).slice(0, 3);
+        const autos = result.filter(i => i.type.includes('repair') || i.type.includes('fuel')).slice(0, 3);
+        
+        // Re-combine and sort purely by distance
+        result = [...meds, ...pols, ...autos].sort((a, b) => a.distance - b.distance);
+      } else {
+        // If they are on a specific tab, just show the top 3 of that tab
+        result = result.slice(0, 3);
+      }
+    }
+    return result;
+  }, [nearbyServices, activeTab, showAllServices]);
+
+  // THE UPGRADED ICON DICTIONARY
   const getServiceIcon = (type: string) => {
     const t = type.toLowerCase();
-    if (t.includes('hospital') || t.includes('clinic')) return '🏥';
+    if (t.includes('hospital') || t.includes('clinic') || t.includes('pharmacy')) return '🏥';
     if (t.includes('police')) return '🚓';
     if (t.includes('fire')) return '🚒';
+    if (t.includes('repair')) return '🔧';
+    if (t.includes('fuel')) return '⛽';
     return '🚨';
   };
 
@@ -434,7 +516,7 @@ export default function HomeScreen() {
               <Text style={styles.roleCardIcon}>🤝</Text>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.roleCardTitle, { color: COLORS.amber }]}>I'm Helping Someone</Text>
-                <Text style={[styles.roleCardSub, { color: COLORS.textSecondary }]}>Does NOT message your family</Text>
+                <Text style={styles.roleCardSub}>Does NOT message your family</Text>
               </View>
               <Text style={[styles.roleCardArrow, { color: COLORS.amber }]}>›</Text>
             </TouchableOpacity>
@@ -469,25 +551,48 @@ export default function HomeScreen() {
         </View>
       ) : isEmergencyMode ? (
         <View style={styles.emergencyRoot}>
-          <View style={[styles.emergencyTopBar, { borderBottomColor: accentColor + '44' }]}>
+          
+          {/* THE FIX: MINIMALIST TOP COMMAND BAR */}
+          <View style={[styles.emergencyTopBar, { borderBottomColor: COLORS.surfaceBorder }]}>
+            
+            {/* LEFT: Compact Exit */}
             <TouchableOpacity onPress={closeEmergencyMode} style={styles.exitBtn} activeOpacity={0.75}>
-              <Text style={styles.exitBtnText}>✕ Exit</Text>
+              <Text style={[styles.exitBtnText, { fontSize: 15, fontWeight: FONT.black }]}>✕</Text>
             </TouchableOpacity>
-            <View style={[styles.modeBadge, { backgroundColor: accentColor + '20', borderColor: accentColor }]}>
+
+            {/* MIDDLE: Compact Mode Badge */}
+            <View style={[styles.modeBadge, { backgroundColor: COLORS.surface, borderColor: accentColor }]}>
               <View style={[styles.modeBadgeDot, { backgroundColor: accentColor }]} />
-              <Text style={[styles.modeBadgeText, { color: accentColor }]}>{isBystander ? 'BYSTANDER MODE' : 'EMERGENCY MODE'}</Text>
+              <Text style={[styles.modeBadgeText, { color: accentColor }]}>{isBystander ? 'BYSTANDER' : 'EMERGENCY'}</Text>
             </View>
-            <View style={{ width: 70 }} />
+
+            {/* RIGHT: Action Buttons */}
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <TouchableOpacity style={styles.miniActionBtn} onPress={() => Linking.openURL('tel:112')} activeOpacity={0.7}>
+                <Text style={{ fontSize: 16 }}>📞</Text>
+              </TouchableOpacity>
+
+              {emergencyRole === 'USER' && (
+                <TouchableOpacity style={[styles.miniActionBtn, { backgroundColor: COLORS.danger, borderColor: COLORS.dangerDark }]} onPress={() => triggerSOS()} activeOpacity={0.7}>
+                  <Text style={{ fontSize: 16 }}>💬</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
 
           <View style={styles.tabRow}>
-            {(['ALL', 'HOSPITAL', 'POLICE'] as const).map((tab) => {
-              const tabIcons: Record<string, string> = { ALL: '🗺', HOSPITAL: '🏥', POLICE: '🚓' };
+            {(['ALL', 'MEDICAL', 'POLICE', 'AUTO'] as const).map((tab) => {
+              const tabIcons: Record<string, string> = { ALL: '🗺', MEDICAL: '🏥', POLICE: '🚓', AUTO: '🔧' };
               const active = activeTab === tab;
               return (
-                <TouchableOpacity key={tab} style={[styles.tabBtn, active && { backgroundColor: accentColor, ...SHADOW_DANGER }]} onPress={() => setActiveTab(tab)} activeOpacity={0.8}>
+                <TouchableOpacity 
+                  key={tab} 
+                  style={[styles.tabBtn, active && { backgroundColor: COLORS.surfaceRaised, borderColor: accentColor }]} 
+                  onPress={() => { setActiveTab(tab); setShowAllServices(false); }} 
+                  activeOpacity={0.8}
+                >
                   <Text style={styles.tabBtnIcon}>{tabIcons[tab]}</Text>
-                  <Text style={[styles.tabBtnLabel, active && { color: COLORS.white }]}>{tab}</Text>
+                  <Text style={[styles.tabBtnLabel, active && { color: COLORS.textPrimary }]}>{tab}</Text>
                 </TouchableOpacity>
               );
             })}
@@ -498,6 +603,19 @@ export default function HomeScreen() {
             keyExtractor={(item) => item.id.toString()}
             contentContainerStyle={styles.listContent}
             showsVerticalScrollIndicator={false}
+            ListFooterComponent={
+              !showAllServices && filteredServices.length >= 3 ? (
+                <TouchableOpacity 
+                  style={{ padding: 18, alignItems: 'center', marginTop: 5, backgroundColor: COLORS.surface, borderRadius: RADIUS.md, borderWidth: 1, borderColor: COLORS.surfaceBorder }} 
+                  onPress={() => setShowAllServices(true)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={{ color: COLORS.textPrimary, fontWeight: FONT.bold, fontSize: 13, letterSpacing: 1.5 }}>
+                    ↓  SHOW ALL {activeTab} SERVICES  ↓
+                  </Text>
+                </TouchableOpacity>
+              ) : null
+            }
             ListEmptyComponent={
               <View style={styles.emptyState}>
                 <Text style={styles.emptyIcon}>📡</Text>
@@ -506,32 +624,18 @@ export default function HomeScreen() {
               </View>
             }
             renderItem={({ item }) => (
-              <View style={[styles.serviceCard, { borderLeftColor: accentColor }]}>
+              <View style={[styles.serviceCard, { borderLeftWidth: 4, borderLeftColor: accentColor }]}>
                 <Text style={styles.serviceIcon}>{getServiceIcon(item.type)}</Text>
                 <View style={styles.serviceInfo}>
                   <Text style={styles.serviceName}>{item.name}</Text>
                   <Text style={[styles.serviceType, { color: accentColor }]}>{item.type.toUpperCase()}</Text>
                 </View>
-                <TouchableOpacity style={[styles.navBtn, { backgroundColor: accentColor }]} onPress={() => startNavigation(item.latitude || item.lat, item.longitude || item.lon)} activeOpacity={0.85}>
+                <TouchableOpacity style={[styles.navBtn, { backgroundColor: COLORS.surfaceRaised }]} onPress={() => startNavigation(item.latitude || item.lat, item.longitude || item.lon)} activeOpacity={0.85}>
                   <Text style={styles.navBtnText}>GO  ›</Text>
                 </TouchableOpacity>
               </View>
             )}
           />
-
-          <View style={[styles.emergencyFooter, { backgroundColor: COLORS.surface }]}>
-            {emergencyRole === 'USER' ? (
-              <TouchableOpacity style={[styles.primaryActionBtn, { backgroundColor: COLORS.danger, ...SHADOW_DANGER }]} onPress={() => triggerSOS()} activeOpacity={0.88}>
-                <Text style={styles.primaryActionIcon}>🚨</Text>
-                <Text style={styles.primaryActionText}>DISPATCH SOS NOW</Text>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity style={[styles.primaryActionBtn, { backgroundColor: COLORS.amber, ...SHADOW_AMBER }]} onPress={() => Linking.openURL('tel:112')} activeOpacity={0.88}>
-                <Text style={styles.primaryActionIcon}>📞</Text>
-                <Text style={styles.primaryActionText}>DIAL 112 NOW</Text>
-              </TouchableOpacity>
-            )}
-          </View>
         </View>
       ) : (
         <View style={styles.dashRoot}>
@@ -579,124 +683,143 @@ export default function HomeScreen() {
 
           {nearbyServices.length > 0 && (
             <View style={styles.nearbyStrip}>
-              <Text style={styles.nearbyStripText}>📡  {nearbyServices.length} emergency service{nearbyServices.length > 1 ? 's' : ''} indexed nearby</Text>
+              <Text style={styles.nearbyStripText}>📡  {nearbyServices.length} offline services ready</Text>
             </View>
           )}
 
           <View style={styles.sliderWrapper}>
             <View style={styles.sliderTrack}>
-              <Text style={styles.sliderHint} numberOfLines={1} adjustsFontSizeToFit>SWIPE TO ACTIVATE SOS  »</Text>
+              <Text style={styles.sliderHint} numberOfLines={1} adjustsFontSizeToFit>SWIPE TO SOS  »</Text>
               <Animated.View {...panResponder.panHandlers} style={[styles.sliderKnob, { transform: [{ translateX: pan.x }] }]}>
                 <Text style={styles.sliderKnobText}>»</Text>
               </Animated.View>
             </View>
-            <Text style={styles.sliderCaption}>Slide right to open Emergency Mode</Text>
+            <Text style={styles.sliderCaption}>Slide right for Emergency Mode</Text>
           </View>
         </View>
       )}
     </View>
   );}
 
+// Minimalist UI requires NO shadows. We rely entirely on contrast and thin borders.
 const ui = StyleSheet.create({
   badge: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderRadius: RADIUS.pill, paddingHorizontal: 10, paddingVertical: 4, alignSelf: 'flex-start', marginTop: 6 },
   badgeDot: { width: 6, height: 6, borderRadius: 3, marginRight: 6 },
-  badgeText: { fontSize: 10, fontWeight: FONT.bold, letterSpacing: 0.8 },
+  badgeText: { fontSize: 10, fontWeight: FONT.bold, letterSpacing: 1 },
 });
 
+// ─── Main Stylesheet ──────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: COLORS.bg },
+  
+  // Onboarding Screen
   onboardingRoot: { flex: 1, backgroundColor: COLORS.bg, paddingHorizontal: 24, paddingTop: Platform.OS === 'ios' ? 70 : 50, paddingBottom: 40 },
   onboardingHeader: { marginBottom: 32 },
-  onboardingBadge: { backgroundColor: COLORS.dangerMuted, borderRadius: RADIUS.pill, paddingHorizontal: 12, paddingVertical: 5, alignSelf: 'flex-start', marginBottom: 14 },
-  onboardingBadgeText: { color: COLORS.danger, fontSize: 10, fontWeight: FONT.bold, letterSpacing: 2 },
+  onboardingBadge: { backgroundColor: COLORS.surfaceRaised, borderRadius: RADIUS.pill, paddingHorizontal: 12, paddingVertical: 5, alignSelf: 'flex-start', marginBottom: 14 },
+  onboardingBadgeText: { color: COLORS.textPrimary, fontSize: 10, fontWeight: FONT.bold, letterSpacing: 2 },
   onboardingTitle: { fontSize: 40, fontWeight: FONT.black, color: COLORS.textPrimary, letterSpacing: -1 },
-  onboardingSubtitle: { fontSize: 15, color: COLORS.textSecondary, marginTop: 8, lineHeight: 22 },
+  onboardingSubtitle: { fontSize: 15, color: COLORS.textMuted, marginTop: 8, lineHeight: 22 },
   onboardingForm: { flex: 1 },
   formGroupLabel: { fontSize: 10, fontWeight: FONT.bold, color: COLORS.textMuted, letterSpacing: 2, marginBottom: 10 },
   inputField: { backgroundColor: COLORS.surface, color: COLORS.textPrimary, borderWidth: 1, borderColor: COLORS.surfaceBorder, borderRadius: RADIUS.md, paddingHorizontal: 16, paddingVertical: 14, fontSize: 16, marginBottom: 10 },
   inputRow: { flexDirection: 'row', gap: 10 },
   inputHalf: { flex: 1 },
-  saveBtn: { backgroundColor: COLORS.danger, borderRadius: RADIUS.lg, paddingVertical: 18, alignItems: 'center', ...SHADOW_DANGER },
-  saveBtnText: { color: COLORS.white, fontSize: 16, fontWeight: FONT.black, letterSpacing: 1.5 },
-  roleOverlay: { flex: 1, backgroundColor: COLORS.overlay, justifyContent: 'flex-end' },
-  roleSheet: { backgroundColor: COLORS.surface, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 28, paddingBottom: 44 },
+  saveBtn: { backgroundColor: COLORS.danger, borderRadius: RADIUS.pill, paddingVertical: 18, alignItems: 'center' },
+  saveBtnText: { color: COLORS.textPrimary, fontSize: 16, fontWeight: FONT.black, letterSpacing: 1 },
+  
+  // Role Selector Modal
+  roleOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'flex-end' },
+  roleSheet: { backgroundColor: COLORS.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 28, paddingBottom: 44, borderWidth: 1, borderColor: COLORS.surfaceBorder },
   roleSheetEyebrow: { fontSize: 10, fontWeight: FONT.bold, color: COLORS.danger, letterSpacing: 2, textAlign: 'center', marginBottom: 10 },
   roleSheetTitle: { fontSize: 26, fontWeight: FONT.black, color: COLORS.textPrimary, textAlign: 'center' },
-  roleSheetSub: { fontSize: 13, color: COLORS.textSecondary, textAlign: 'center', marginTop: 6, marginBottom: 28 },
-  roleCardDanger: { backgroundColor: COLORS.dangerMuted, borderWidth: 1.5, borderColor: COLORS.danger, borderRadius: RADIUS.lg, padding: 16, flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 14 },
-  roleCardAmber: { backgroundColor: COLORS.amberMuted, borderWidth: 1.5, borderColor: COLORS.amber, borderRadius: RADIUS.lg, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14 },
+  roleSheetSub: { fontSize: 13, color: COLORS.textMuted, textAlign: 'center', marginTop: 6, marginBottom: 28 },
+  roleCardDanger: { backgroundColor: COLORS.dangerDark, borderWidth: 1, borderColor: COLORS.danger, borderRadius: RADIUS.lg, padding: 16, flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 14 },
+  roleCardAmber: { backgroundColor: '#3A2600', borderWidth: 1, borderColor: COLORS.amber, borderRadius: RADIUS.lg, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14 },
   roleCardIcon: { fontSize: 28 },
   roleCardTitle: { fontSize: 17, fontWeight: FONT.bold, color: COLORS.textPrimary },
-  roleCardSub: { fontSize: 12, color: COLORS.danger, marginTop: 3 },
-  roleCardArrow: { fontSize: 26, color: COLORS.danger, fontWeight: FONT.bold },
+  roleCardSub: { fontSize: 12, color: COLORS.textSecondary, marginTop: 3 },
+  roleCardArrow: { fontSize: 26, color: COLORS.textPrimary, fontWeight: FONT.bold },
   roleCancelBtn: { marginTop: 22, alignItems: 'center', padding: 10 },
-  roleCancelText: { color: COLORS.textSecondary, fontSize: 15, fontWeight: FONT.medium },
-  crashScreen: { flex: 1, backgroundColor: '#1A0000', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 30 },
-  crashPulseRing: { position: 'absolute', width: 320, height: 320, borderRadius: 160, borderWidth: 2, borderColor: COLORS.danger + '33' },
-  crashEyebrow: { color: COLORS.danger, fontSize: 13, fontWeight: FONT.bold, letterSpacing: 2, marginBottom: 16 },
+  roleCancelText: { color: COLORS.textMuted, fontSize: 15, fontWeight: FONT.medium },
+  
+  // Crash Detection Screen
+  crashScreen: { flex: 1, backgroundColor: COLORS.danger, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 30 },
+  crashPulseRing: { position: 'absolute', width: 320, height: 320, borderRadius: 160, borderWidth: 4, borderColor: '#FFFFFF33' },
+  crashEyebrow: { color: COLORS.textPrimary, fontSize: 13, fontWeight: FONT.bold, letterSpacing: 2, marginBottom: 16 },
   crashTitle: { fontSize: 48, fontWeight: FONT.black, color: COLORS.textPrimary, textAlign: 'center', lineHeight: 50, letterSpacing: -2 },
-  crashSub: { color: COLORS.textSecondary, fontSize: 16, marginTop: 24 },
+  crashSub: { color: COLORS.textPrimary, fontSize: 16, marginTop: 24, opacity: 0.8 },
   crashTimerBox: { alignItems: 'center', marginVertical: 12 },
-  crashTimer: { fontSize: 120, fontWeight: FONT.black, color: COLORS.danger, lineHeight: 130, letterSpacing: -4 },
-  crashTimerUnit: { fontSize: 14, fontWeight: FONT.bold, color: COLORS.textMuted, letterSpacing: 4, marginTop: -10 },
-  crashCancelBtn: { backgroundColor: COLORS.white, borderRadius: RADIUS.xl, paddingVertical: 20, paddingHorizontal: 40, marginTop: 28, alignSelf: 'stretch', alignItems: 'center' },
-  crashCancelText: { color: COLORS.danger, fontSize: 18, fontWeight: FONT.black, letterSpacing: 1 },
+  crashTimer: { fontSize: 120, fontWeight: FONT.black, color: COLORS.textPrimary, lineHeight: 130, letterSpacing: -4 },
+  crashTimerUnit: { fontSize: 14, fontWeight: FONT.bold, color: COLORS.textPrimary, letterSpacing: 4, marginTop: -10, opacity: 0.8 },
+  crashCancelBtn: { backgroundColor: COLORS.bg, borderRadius: RADIUS.pill, paddingVertical: 20, paddingHorizontal: 40, marginTop: 28, alignSelf: 'stretch', alignItems: 'center' },
+  crashCancelText: { color: COLORS.textPrimary, fontSize: 18, fontWeight: FONT.black, letterSpacing: 1 },
+  
+  // Sync Screen
   syncScreen: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16, paddingHorizontal: 40 },
   syncTitle: { fontSize: 22, fontWeight: FONT.black, color: COLORS.textPrimary, letterSpacing: 3, marginTop: 8 },
-  syncSub: { fontSize: 13, color: COLORS.textSecondary, textAlign: 'center', lineHeight: 20 },
+  syncSub: { fontSize: 13, color: COLORS.textMuted, textAlign: 'center', lineHeight: 20 },
+  
+  // Emergency Mode Active
   emergencyRoot: { flex: 1, paddingHorizontal: 20, paddingTop: Platform.OS === 'ios' ? 60 : 40 },
   emergencyTopBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 16, borderBottomWidth: 1 },
-  exitBtn: { backgroundColor: COLORS.surfaceRaised, borderRadius: RADIUS.pill, paddingHorizontal: 14, paddingVertical: 7 },
-  exitBtnText: { color: COLORS.textSecondary, fontSize: 13, fontWeight: FONT.semi },
+  exitBtn: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.surfaceBorder, borderRadius: RADIUS.pill, paddingHorizontal: 14, paddingVertical: 7 },
+  exitBtnText: { color: COLORS.textPrimary, fontSize: 13, fontWeight: FONT.semi },
   modeBadge: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderRadius: RADIUS.pill, paddingHorizontal: 12, paddingVertical: 5 },
   modeBadgeDot: { width: 7, height: 7, borderRadius: 4, marginRight: 7 },
   modeBadgeText: { fontSize: 11, fontWeight: FONT.bold, letterSpacing: 1 },
   tabRow: { flexDirection: 'row', gap: 8, marginTop: 18, marginBottom: 16 },
-  tabBtn: { flex: 1, backgroundColor: COLORS.surfaceRaised, borderRadius: RADIUS.md, paddingVertical: 10, alignItems: 'center' },
+  tabBtn: { flex: 1, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.surfaceBorder, borderRadius: RADIUS.md, paddingVertical: 10, alignItems: 'center' },
   tabBtnIcon: { fontSize: 16, marginBottom: 3 },
-  tabBtnLabel: { fontSize: 10, fontWeight: FONT.bold, color: COLORS.textSecondary, letterSpacing: 1 },
-  listContent: { paddingBottom: 160 },
-  serviceCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.md, borderLeftWidth: 3, padding: 14, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 12, ...SHADOW_SOFT },
+  tabBtnLabel: { fontSize: 10, fontWeight: FONT.bold, color: COLORS.textMuted, letterSpacing: 1 },
+  listContent: { paddingBottom: 40 },
+  miniActionBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: COLORS.surfaceRaised, borderWidth: 1, borderColor: COLORS.surfaceBorder, alignItems: 'center', justifyContent: 'center' },
+  serviceCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.md, padding: 14, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 12, borderWidth: 1, borderColor: COLORS.surfaceBorder },
   serviceIcon: { fontSize: 22 },
   serviceInfo: { flex: 1 },
   serviceName: { fontSize: 15, fontWeight: FONT.bold, color: COLORS.textPrimary },
   serviceType: { fontSize: 10, fontWeight: FONT.bold, letterSpacing: 1.2, marginTop: 3 },
   navBtn: { borderRadius: RADIUS.sm, paddingVertical: 10, paddingHorizontal: 16 },
-  navBtnText: { color: COLORS.white, fontWeight: FONT.bold, fontSize: 13 },
+  navBtnText: { color: COLORS.textPrimary, fontWeight: FONT.bold, fontSize: 13 },
   emptyState: { alignItems: 'center', paddingTop: 60, gap: 10 },
   emptyIcon: { fontSize: 40 },
   emptyTitle: { fontSize: 18, fontWeight: FONT.bold, color: COLORS.textSecondary },
   emptyBody: { fontSize: 14, color: COLORS.textMuted, textAlign: 'center', lineHeight: 20 },
-  emergencyFooter: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 20, paddingBottom: Platform.OS === 'ios' ? 40 : 24 },
-  primaryActionBtn: { borderRadius: RADIUS.xl, paddingVertical: 20, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
-  primaryActionIcon: { fontSize: 22 },
-  primaryActionText: { color: COLORS.white, fontSize: 18, fontWeight: FONT.black, letterSpacing: 1.5 },
+  
+  // Dual-Action Footer
+  emergencyFooter: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: 20, paddingBottom: Platform.OS === 'ios' ? 40 : 24, backgroundColor: COLORS.bg, borderTopWidth: 1, borderTopColor: COLORS.surfaceBorder },
+  primaryActionBtn: { borderRadius: RADIUS.pill, paddingVertical: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  primaryActionIcon: { fontSize: 20 },
+  primaryActionText: { color: COLORS.textPrimary, fontSize: 15, fontWeight: FONT.black, letterSpacing: 1 },
+  
+  // Main Dashboard
   dashRoot: { flex: 1, paddingHorizontal: 20, paddingTop: Platform.OS === 'ios' ? 60 : 40 },
   dashHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 },
   appName: { fontSize: 36, fontWeight: FONT.black, color: COLORS.textPrimary, letterSpacing: -1 },
-  editProfileBtn: { backgroundColor: COLORS.surfaceRaised, borderRadius: RADIUS.pill, paddingHorizontal: 16, paddingVertical: 8, marginTop: 4 },
-  editProfileText: { color: COLORS.navBlue, fontSize: 14, fontWeight: FONT.semi },
-  medCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.xl, padding: 20, marginBottom: 14, ...SHADOW_SOFT, borderWidth: 1, borderColor: COLORS.surfaceBorder },
+  editProfileBtn: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.surfaceBorder, borderRadius: RADIUS.pill, paddingHorizontal: 16, paddingVertical: 8, marginTop: 4 },
+  editProfileText: { color: COLORS.textPrimary, fontSize: 14, fontWeight: FONT.semi },
+  medCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: 20, marginBottom: 14, borderWidth: 1, borderColor: COLORS.surfaceBorder },
   medCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   medCardLabel: { fontSize: 10, fontWeight: FONT.bold, color: COLORS.textMuted, letterSpacing: 2 },
-  bloodTypePill: { backgroundColor: COLORS.dangerMuted, borderWidth: 1, borderColor: COLORS.danger, borderRadius: RADIUS.pill, paddingHorizontal: 14, paddingVertical: 4 },
+  bloodTypePill: { backgroundColor: COLORS.dangerDark, borderWidth: 1, borderColor: COLORS.danger, borderRadius: RADIUS.pill, paddingHorizontal: 14, paddingVertical: 4 },
   bloodTypeText: { color: COLORS.danger, fontSize: 15, fontWeight: FONT.black },
   medRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
   medField: { gap: 4 },
   medFieldLabel: { fontSize: 9, fontWeight: FONT.bold, color: COLORS.textMuted, letterSpacing: 2 },
   medFieldValue: { fontSize: 16, fontWeight: FONT.bold, color: COLORS.textPrimary },
-  contactsCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.xl, padding: 20, marginBottom: 14, ...SHADOW_SOFT, borderWidth: 1, borderColor: COLORS.surfaceBorder },
+  contactsCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: 20, marginBottom: 14, borderWidth: 1, borderColor: COLORS.surfaceBorder },
   contactsLabel: { fontSize: 10, fontWeight: FONT.bold, color: COLORS.textMuted, letterSpacing: 2, marginBottom: 14 },
   contactRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 12 },
   contactIndex: { width: 28, height: 28, borderRadius: 14, backgroundColor: COLORS.surfaceRaised, alignItems: 'center', justifyContent: 'center' },
-  contactIndexText: { fontSize: 12, fontWeight: FONT.bold, color: COLORS.textSecondary },
+  contactIndexText: { fontSize: 12, fontWeight: FONT.bold, color: COLORS.textPrimary },
   contactNum: { fontSize: 16, fontWeight: FONT.medium, color: COLORS.textPrimary },
-  nearbyStrip: { backgroundColor: COLORS.surfaceRaised, borderRadius: RADIUS.md, paddingVertical: 10, paddingHorizontal: 16, marginBottom: 20, borderWidth: 1, borderColor: COLORS.surfaceBorder },
-  nearbyStripText: { color: COLORS.textSecondary, fontSize: 13, fontWeight: FONT.medium },
+  nearbyStrip: { backgroundColor: COLORS.surface, borderRadius: RADIUS.md, paddingVertical: 10, paddingHorizontal: 16, marginBottom: 20, borderWidth: 1, borderColor: COLORS.surfaceBorder },
+  nearbyStripText: { color: COLORS.textMuted, fontSize: 13, fontWeight: FONT.medium },
+  
+  // Slider UI
   sliderWrapper: { position: 'absolute', bottom: Platform.OS === 'ios' ? 50 : 36, left: 20, right: 20 },
-  sliderTrack: { height: 68, backgroundColor: COLORS.dangerMuted, borderRadius: RADIUS.pill, justifyContent: 'center', borderWidth: 1.5, borderColor: COLORS.danger, overflow: 'hidden', ...SHADOW_DANGER },
-  sliderHint: { position: 'absolute', width: '100%', textAlign: 'center', color: COLORS.danger, fontWeight: FONT.black, fontSize: 14, letterSpacing: 1.5 },
-  sliderKnob: { position: 'absolute', left: 0, width: 68, height: 68, backgroundColor: COLORS.danger, borderRadius: RADIUS.pill, justifyContent: 'center', alignItems: 'center', ...SHADOW_DANGER },
-  sliderKnobText: { color: COLORS.white, fontSize: 24, fontWeight: FONT.black },
+  sliderTrack: { height: 68, backgroundColor: COLORS.surface, borderRadius: RADIUS.pill, justifyContent: 'center', borderWidth: 1, borderColor: COLORS.surfaceBorder, overflow: 'hidden' },
+  sliderHint: { position: 'absolute', width: '100%', textAlign: 'center', color: COLORS.textMuted, fontWeight: FONT.bold, fontSize: 14, letterSpacing: 1.5 },
+  sliderKnob: { position: 'absolute', left: 4, width: 60, height: 60, backgroundColor: COLORS.danger, borderRadius: RADIUS.pill, justifyContent: 'center', alignItems: 'center' },
+  sliderKnobText: { color: COLORS.textPrimary, fontSize: 24, fontWeight: FONT.black },
   sliderCaption: { textAlign: 'center', color: COLORS.textMuted, fontSize: 11, marginTop: 8, letterSpacing: 0.5 },
 });

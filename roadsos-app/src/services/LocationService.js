@@ -46,7 +46,8 @@ export const getLiveLocation = async () => {
 // OS-LEVEL NAVIGATION HANDOFF
 // ==========================================
 export const startNavigation = async (lat, lng) => {
-    const iosUrl = `maps://app?daddr=${lat},${lng}&dirflg=d`;
+    // These deep links tell the OS to immediately start turn-by-turn driving directions
+    const iosUrl = `maps://?daddr=${lat},${lng}&dirflg=d`;
     const androidUrl = `google.navigation:q=${lat},${lng}`;
     
     const url = Platform.OS === 'ios' ? iosUrl : androidUrl;
@@ -54,13 +55,15 @@ export const startNavigation = async (lat, lng) => {
     try {
       const supported = await Linking.canOpenURL(url);
       if (supported) {
+        // If the native Maps app is installed, fire it up directly!
         await Linking.openURL(url);
       } else {
-        const browserUrl = `https://www.google.com/maps/dir/?api=1&destination=$${lat},${lng}`;
+        // THE FIX: Properly formatted Google Maps Directions API link
+        const browserUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
         await Linking.openURL(browserUrl);
       }
     } catch (error) {
       Alert.alert("Error", "Could not open the navigation app.");
       console.error("Navigation Handoff Error:", error);
     }
-  };
+};
