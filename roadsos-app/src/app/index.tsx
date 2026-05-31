@@ -1,23 +1,35 @@
-import {
-  StyleSheet, Text, View, Alert, TouchableOpacity, FlatList,
-  ActivityIndicator, Modal, TextInput, DeviceEventEmitter,
-  Animated, PanResponder, Linking, StatusBar, Platform, Vibration
-} from 'react-native';
-import React, { useEffect, useState, useRef } from 'react';
-import { Accelerometer } from 'expo-sensors';
-import * as Location from 'expo-location';
-import * as Battery from 'expo-battery';
-import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
-import * as Brightness from 'expo-brightness';
-import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
+import * as Battery from 'expo-battery';
+import * as Brightness from 'expo-brightness';
+import { activateKeepAwakeAsync } from 'expo-keep-awake';
+import * as Location from 'expo-location';
+import { Accelerometer } from 'expo-sensors';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Animated,
+  DeviceEventEmitter,
+  FlatList,
+  Linking,
+  Modal,
+  PanResponder,
+  Platform,
+  StatusBar,
+  StyleSheet, Text,
+  TextInput,
+  TouchableOpacity,
+  Vibration,
+  View
+} from 'react-native';
 
 // Services & Hooks
-import { initializeSmartVault, syncAreaIfNeeded, getLocalEmergencyServices } from '../services/DatabaseService';
-import { sendEmergencySMS } from '../services/SmsService';
-import { saveUserProfile, getUserProfile } from '../services/ProfileService';
-import { startNavigation } from '../services/LocationService';
 import { useLocationWatcher } from '../hooks/useLocationWatcher';
+import { getLocalEmergencyServices, initializeSmartVault, syncAreaIfNeeded } from '../services/DatabaseService';
+import { startNavigation } from '../services/LocationService';
+import { getUserProfile, saveUserProfile } from '../services/ProfileService';
+import { sendEmergencySMS } from '../services/SmsService';
 
 // ─── TYPESCRIPT INTERFACES ────────────────────────────────────────────────────
 interface UserProfile {
@@ -74,7 +86,7 @@ export default function HomeScreen() {
   const [countdown, setCountdown]           = useState<number | null>(null);
   const [nearbyServices, setNearbyServices] = useState<any[]>([]);
   
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<NodeJS.Timeout | number | null>(null);
   const speedBuffer = useRef<number[]>([]);
 
   const [isEmergencyMode, setIsEmergencyMode]   = useState(false);
@@ -96,36 +108,86 @@ export default function HomeScreen() {
   useLocationWatcher(isVaultReady);
 
   // ==========================================
+  // SMART BOOT CHECK (SPEED / DAILY REMINDER)
+  // ==========================================
+  useEffect(() => {
+    const runSmartBootCheck = async () => {
+      try {
+        if (Platform.OS === 'web') return; // Skip hardware checks on web
+
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') return;
+
+        const location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        
+        const speedMetersPerSec = location.coords.speed || 0;
+        const speedKmh = speedMetersPerSec * 3.6;
+
+        // URGENT: Moving fast
+        if (speedKmh > 15) {
+          Alert.alert(
+            "🚗 Motion Detected!",
+            "It looks like you are traveling. Please ensure RoadSOS is actively running on your screen to keep crash detection armed.",
+            [{ text: "I will keep it on" }]
+          );
+          return; 
+        }
+
+        // GENTLE: Daily standard reminder
+        const today = new Date().toDateString();
+        const lastReminderDate = await AsyncStorage.getItem('@last_drive_reminder');
+
+        if (lastReminderDate !== today) {
+          Alert.alert(
+            "Stay Safe Today",
+            "Don't forget to keep RoadSOS open when you start your journey for automatic crash detection!",
+            [{ text: "Got it" }]
+          );
+          await AsyncStorage.setItem('@last_drive_reminder', today);
+        }
+
+      } catch (error) {
+        console.log("Smart Boot Check skipped (GPS unavailable or timeout).", error);
+      }
+    };
+
+    // Delay slightly so it doesn't conflict with the main vault sync UI
+    setTimeout(() => {
+      runSmartBootCheck();
+    }, 1500);
+  }, []);
+
+  // ==========================================
   // HARDWARE OVERRIDE: SCREEN TIMEOUT & BRIGHTNESS
   // ==========================================
   const originalBrightnessRef = useRef<number | null>(null);
 
   useEffect(() => {
     const manageHardware = async () => {
+      // 1. ALWAYS keep the screen awake while the app is open
+      activateKeepAwakeAsync();
+
       if (isSyncing || countdown !== null || isEmergencyMode || showRoleSelector) {
-        // 1. Force Screen to Stay Awake
-        activateKeepAwakeAsync();
-        
-        // 2. Force Brightness to 100%
+        // 2. Force Brightness to 100% during an active emergency
         const { status } = await Brightness.requestPermissionsAsync();
         if (status === 'granted') {
           const currentBrightness = await Brightness.getBrightnessAsync();
           if (originalBrightnessRef.current === null) {
              originalBrightnessRef.current = currentBrightness;
           }
-          await Brightness.setBrightnessAsync(1); // 1 = 100%
+          await Brightness.setBrightnessAsync(1); 
         }
       } else {
-        // 1. Let screen timeout normally again
-        deactivateKeepAwake();
-        
-        // 2. Revert brightness to what it was before the SOS
+        // 3. Revert brightness to normal when NOT in an emergency
+        // Screen remains awake because of step 1!
         if (originalBrightnessRef.current !== null) {
           const { status } = await Brightness.requestPermissionsAsync();
           if (status === 'granted') {
              await Brightness.setBrightnessAsync(originalBrightnessRef.current);
           }
-          originalBrightnessRef.current = null; // Clear it out
+          originalBrightnessRef.current = null; 
         }
       }
     };
@@ -138,7 +200,6 @@ export default function HomeScreen() {
   // ==========================================
   const [lowBatteryFired, setLowBatteryFired] = useState(false);
   useEffect(() => {
-    // THE FIX: Completely abort the battery hardware check if running in a web browser!
     if (Platform.OS === 'web') return;
 
     const checkBattery = async (level: number) => {
@@ -179,7 +240,7 @@ export default function HomeScreen() {
   // SPEED TRACKER (Velocity-Gated Memory)
   // ==========================================
   useEffect(() => {
-    let speedSub: Location.LocationSubscription | null = null;
+    let speedSub: { remove: () => void } | null = null;
     const startSpeedTracker = async () => {
       const { status } = await Location.getForegroundPermissionsAsync();
       if (status !== 'granted') return;
@@ -205,9 +266,8 @@ export default function HomeScreen() {
       onStartShouldSetPanResponder: () => true,
       onPanResponderMove: Animated.event([null, { dx: pan.x }], { useNativeDriver: false }),
       onPanResponderRelease: (e, gesture) => {
-        // Reduced to 120 so it's easier to slide
         if (gesture.dx > 120) {
-          Vibration.vibrate(50); // Haptic feedback on slide
+          Vibration.vibrate(50); 
           Animated.spring(pan, { toValue: { x: 250, y: 0 }, useNativeDriver: false }).start();
           setTimeout(() => setShowRoleSelector(true), 200);
         } else {
@@ -226,13 +286,9 @@ export default function HomeScreen() {
   // ==========================================
   // BOOT SEQUENCE
   // ==========================================
-  // ==========================================
-  // BOOT SEQUENCE
-  // ==========================================
   useEffect(() => {
     const bootSystem = async () => {
       try {
-        // 🚨 WEB BYPASS: Skip native SQLite and GPS if running in the browser
         if (Platform.OS === 'web') {
           console.log("🌐 Web Environment Detected: Bypassing Native Smart Vault.");
           
@@ -243,7 +299,6 @@ export default function HomeScreen() {
             setProfile(existingProfile);
           }
           
-          // Inject mock data so you can actually test the UI on the web!
           setNearbyServices([
             { id: '1', type: 'hospital', name: 'Web Test Hospital', distance: 1.2 },
             { id: '2', type: 'police', name: 'Web Test Police', distance: 2.5 },
@@ -252,10 +307,9 @@ export default function HomeScreen() {
           ]);
           
           setIsVaultReady(true);
-          return; // Exit early before hitting the native hardware!
+          return; 
         }
 
-        // 📱 NATIVE BOOT SEQUENCE (Android/iOS)
         await initializeSmartVault();
         const existingProfile = await getUserProfile();
         if (!existingProfile || !existingProfile.name) {
@@ -305,7 +359,6 @@ export default function HomeScreen() {
   // CRASH DETECTOR
   // ==========================================
   useEffect(() => {
-    // THE FIX: Completely abort the G-force crash detector if running in a web browser!
     if (Platform.OS === 'web') return;
 
     Accelerometer.setUpdateInterval(200);
@@ -330,7 +383,7 @@ export default function HomeScreen() {
   // CORE FUNCTIONS
   // ==========================================
   const triggerCrashSequence = () => {
-    Vibration.vibrate([0, 500, 200, 500, 200, 1000]); // Aggressive SOS vibration pattern
+    Vibration.vibrate([0, 500, 200, 500, 200, 1000]); 
     let timeLeft = 10;
     setCountdown(timeLeft);
     timerRef.current = setInterval(() => {
@@ -345,15 +398,14 @@ export default function HomeScreen() {
 
   const cancelCrashSequence = () => {
     if (timerRef.current) {
-      clearInterval(timerRef.current);
+      clearInterval(timerRef.current as any);
       timerRef.current = null;
       setCountdown(null);
     }
   };
 
-  const triggerSOS = async () => {
+  const triggerSOS = async (isBatteryAlert = false) => {
     try {
-      // 1. Give the user instant feedback that the button actually worked
       console.log("🚨 Compiling SMS Payload...");
       
       const networkState = await NetInfo.fetch();
@@ -363,19 +415,15 @@ export default function HomeScreen() {
         return;
       }
       
-      // 2. Grab the live location
       const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       
-      // 3. Compile the exact list of recipients (112 + your family)
       const activeProfile = profileRef.current;
       const activeNearby = nearbyRef.current;
       const rawNumbers = ['112', activeProfile.contact1, activeProfile.contact2, activeProfile.contact3];
       
-      // Strip out any empty strings or nulls
       const targetNumbers = rawNumbers.filter(num => num && num.trim() !== '');
 
-      // 4. Fire the payload to the native OS
-      const smsSuccess = await sendEmergencySMS(location.coords, activeNearby, activeProfile, targetNumbers);
+      const smsSuccess = await sendEmergencySMS(location.coords, activeNearby, activeProfile as any, targetNumbers as any);
       
       if (!smsSuccess) {
         Alert.alert(
@@ -402,11 +450,9 @@ export default function HomeScreen() {
     }
   };
 
-  // THE UPGRADED FILTERING ENGINE
   const filteredServices = React.useMemo(() => {
-    let result = [];
+    let result: any[] = [];
     
-    // 1. Isolate the data based on the active tab
     if (activeTab === 'ALL') {
       result = nearbyServices;
     } else if (activeTab === 'MEDICAL') {
@@ -417,25 +463,20 @@ export default function HomeScreen() {
       result = nearbyServices.filter(item => item.type.includes('repair') || item.type.includes('fuel'));
     }
 
-    // 2. Compress the list if "Show More" hasn't been clicked
     if (!showAllServices) {
       if (activeTab === 'ALL') {
-        // Group them up and slice the top 3 of each category
         const meds = result.filter(i => i.type.includes('hospital') || i.type.includes('clinic') || i.type.includes('pharmacy')).slice(0, 3);
         const pols = result.filter(i => i.type.includes('police') || i.type.includes('fire')).slice(0, 3);
         const autos = result.filter(i => i.type.includes('repair') || i.type.includes('fuel')).slice(0, 3);
         
-        // Re-combine and sort purely by distance
         result = [...meds, ...pols, ...autos].sort((a, b) => a.distance - b.distance);
       } else {
-        // If they are on a specific tab, just show the top 3 of that tab
         result = result.slice(0, 3);
       }
     }
     return result;
   }, [nearbyServices, activeTab, showAllServices]);
 
-  // THE UPGRADED ICON DICTIONARY
   const getServiceIcon = (type: string) => {
     const t = type.toLowerCase();
     if (t.includes('hospital') || t.includes('clinic') || t.includes('pharmacy')) return '🏥';
@@ -552,21 +593,17 @@ export default function HomeScreen() {
       ) : isEmergencyMode ? (
         <View style={styles.emergencyRoot}>
           
-          {/* THE FIX: MINIMALIST TOP COMMAND BAR */}
           <View style={[styles.emergencyTopBar, { borderBottomColor: COLORS.surfaceBorder }]}>
             
-            {/* LEFT: Compact Exit */}
             <TouchableOpacity onPress={closeEmergencyMode} style={styles.exitBtn} activeOpacity={0.75}>
               <Text style={[styles.exitBtnText, { fontSize: 15, fontWeight: FONT.black }]}>✕</Text>
             </TouchableOpacity>
 
-            {/* MIDDLE: Compact Mode Badge */}
             <View style={[styles.modeBadge, { backgroundColor: COLORS.surface, borderColor: accentColor }]}>
               <View style={[styles.modeBadgeDot, { backgroundColor: accentColor }]} />
               <Text style={[styles.modeBadgeText, { color: accentColor }]}>{isBystander ? 'BYSTANDER' : 'EMERGENCY'}</Text>
             </View>
 
-            {/* RIGHT: Action Buttons */}
             <View style={{ flexDirection: 'row', gap: 8 }}>
               <TouchableOpacity style={styles.miniActionBtn} onPress={() => Linking.openURL('tel:112')} activeOpacity={0.7}>
                 <Text style={{ fontSize: 16 }}>📞</Text>
@@ -699,7 +736,8 @@ export default function HomeScreen() {
         </View>
       )}
     </View>
-  );}
+  );
+}
 
 // Minimalist UI requires NO shadows. We rely entirely on contrast and thin borders.
 const ui = StyleSheet.create({
