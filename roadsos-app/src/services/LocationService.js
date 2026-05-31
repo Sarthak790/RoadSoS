@@ -46,24 +46,38 @@ export const getLiveLocation = async () => {
 // OS-LEVEL NAVIGATION HANDOFF
 // ==========================================
 export const startNavigation = async (lat, lng) => {
-    // These deep links tell the OS to immediately start turn-by-turn driving directions
-    const iosUrl = `maps://?daddr=${lat},${lng}&dirflg=d`;
+    // 1. Safety check to ensure we don't pass undefined coordinates to the OS
+    if (!lat || !lng) {
+        Alert.alert("Location Error", "Exact GPS coordinates are missing for this location.");
+        return;
+    }
+
+    // 2. Android: Force Google Maps immediately into Turn-by-Turn driving mode
     const androidUrl = `google.navigation:q=${lat},${lng}`;
     
-    const url = Platform.OS === 'ios' ? iosUrl : androidUrl;
+    // 3. iOS: Force Apple Maps routing
+    const iosUrl = `maps://?daddr=${lat},${lng}&dirflg=d`;
+    
+    // THE FIX: Official Google Maps Universal URL (Browser Fallback)
+    // This strictly routes to coordinates and ignores fuzzy name matching
+    const universalUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+
+    const targetUrl = Platform.OS === 'android' ? androidUrl : iosUrl;
   
     try {
-      const supported = await Linking.canOpenURL(url);
+      const supported = await Linking.canOpenURL(targetUrl);
       if (supported) {
-        // If the native Maps app is installed, fire it up directly!
-        await Linking.openURL(url);
+        // If the native OS Maps app is ready, fire it up directly!
+        await Linking.openURL(targetUrl);
       } else {
-        // THE FIX: Properly formatted Google Maps Directions API link
-        const browserUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
-        await Linking.openURL(browserUrl);
+        // Fallback to the strict Google Maps browser link
+        await Linking.openURL(universalUrl);
       }
     } catch (error) {
-      Alert.alert("Error", "Could not open the navigation app.");
-      console.error("Navigation Handoff Error:", error);
+      // Ultimate fallback if the native Linking API crashes completely
+      console.error("Navigation Handoff Error, attempting browser fallback:", error);
+      Linking.openURL(universalUrl).catch(() => {
+        Alert.alert("Error", "Could not open any navigation app or browser.");
+      });
     }
 };
