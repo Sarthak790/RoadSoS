@@ -6,7 +6,7 @@ import * as Brightness from 'expo-brightness';
 import { activateKeepAwakeAsync } from 'expo-keep-awake';
 import * as Location from 'expo-location';
 import { Accelerometer } from 'expo-sensors';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker } from 'react-native-maps';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -625,7 +625,7 @@ const getServiceTheme = (type: string) => {
     <View style={styles.root}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
 
-      {/* ─── MODAL 2 · TACTICAL GRID MAP ────────────────────────────────────────── */}
+      {/* ─── MODAL 2 · TACTICAL GRID MAP (BYPASSED FOR APK TEST) ─────────────── */}
       <Modal visible={showTacticalMap} animationType="slide" transparent={false}>
         <View style={[styles.onboardingRoot, { justifyContent: 'flex-start', paddingTop: 60, backgroundColor: '#0A0E17' }]}>
           
@@ -653,45 +653,21 @@ const getServiceTheme = (type: string) => {
             borderRadius: RADIUS.md || 12, 
             borderWidth: 1, 
             borderColor: COLORS.surfaceBorder || '#2E3A59', 
-            overflow: 'hidden', // Forces the map viewport to respect the container's rounded corners
+            overflow: 'hidden', 
             backgroundColor: '#05070B'
           }}>
             {mapRegion ? (
-              <MapView
-                provider={PROVIDER_GOOGLE}
-                style={{ flex: 1 }}
-                region={mapRegion}
-                showsUserLocation={true}
-                showsMyLocationButton={false}
-                showsCompass={false}
-                customMapStyle={mapDarkTheme} // Applies the high-contrast tactical dark matrix
-              >
-                {/* Dynamic Secure Zone Safe Perimeter Center-Marker */}
-                <Marker coordinate={{ latitude: mapRegion.latitude, longitude: mapRegion.longitude }}>
-                  <View style={{
-                    width: 44,
-                    height: 44,
-                    borderRadius: 22,
-                    backgroundColor: 'rgba(0, 230, 118, 0.15)',
-                    borderWidth: 1.5,
-                    borderColor: 'rgba(0, 230, 118, 0.6)',
-                    alignItems: 'center',
-                    justifyContent: 'center'
-                  }}>
-                    {/* Core GPS Ping Node */}
-                    <View style={{ 
-                      width: 10, 
-                      height: 10, 
-                      borderRadius: 5, 
-                      backgroundColor: COLORS.safe || '#00E676',
-                      shadowColor: COLORS.safe || '#00E676',
-                      shadowOffset: { width: 0, height: 0 },
-                      shadowOpacity: 0.8,
-                      shadowRadius: 6
-                    }} />
-                  </View>
-                </Marker>
-              </MapView>
+              /* THE FIX: MAP TEMPORARILY DISABLED TO PREVENT ANDROID CRASH */
+              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16, padding: 20 }}>
+                <MaterialCommunityIcons name="shield-lock-outline" size={48} color={COLORS.safe || '#00E676'} style={{ opacity: 0.8 }} />
+                <Text style={{ color: COLORS.safe || '#00E676', fontSize: 16, fontWeight: 'bold', letterSpacing: 2, textAlign: 'center' }}>
+                  GPS TELEMETRY LOCKED
+                </Text>
+                <Text style={{ color: COLORS.textMuted || '#8F9BB3', fontSize: 12, textAlign: 'center', lineHeight: 20 }}>
+                  Lat: {mapRegion.latitude.toFixed(4)} | Lon: {mapRegion.longitude.toFixed(4)}{"\n\n"}
+                  (Map UI disabled for standalone APK testing. Google Maps API Key required for visual render.)
+                </Text>
+              </View>
             ) : (
               /* High-Aesthetic Satellite Intercept Loader */
               <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 }}>

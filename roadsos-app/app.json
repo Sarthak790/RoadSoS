@@ -19,6 +19,10 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSy_DUMMY_KEY_TO_BYPASS_STARTUP_CRASH"
+      } },
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION"
@@ -45,7 +49,13 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow RoadSoS to use your location to calculate driving speed and anticipate cellular dead zones."
+          "locationAlwaysAndWhenInUsePermission": "Allow SentinelX to track telemetry in the background during an emergency."
+        }
+      ],
+      [
+        "expo-brightness",
+        {
+          "brightnessPermission": "Allow SentinelX to force maximum screen brightness during an active SOS."
         }
       ]
     ],
