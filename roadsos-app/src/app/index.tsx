@@ -10,7 +10,9 @@ import * as Battery from 'expo-battery';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import * as Brightness from 'expo-brightness';
 import NetInfo from '@react-native-community/netinfo';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
 
 // Services & Hooks
 import { initializeSmartVault, syncAreaIfNeeded, getLocalEmergencyServices } from '../services/DatabaseService';
@@ -30,28 +32,26 @@ interface UserProfile {
 }
 
 const COLORS = {
-  danger:       '#FF3B30', // Apple Standard Red
-  dangerDark:   '#4A0005',
-  amber:        '#FF9F0A',
-  safe:         '#32D74B',
-  bg:           '#000000', // True OLED Black
-  surface:      '#1C1C1E', // Flat Dark Grey
-  surfaceRaised:'#2C2C2E',
-  surfaceBorder:'#38383A',
-  textPrimary:  '#FFFFFF',
-  textSecondary:'#EBEBF5',
-  textMuted:    '#8E8E93',
+  danger:       '#FF2A2A', // Pure Alarming Red
+  dangerDark:   '#2A0808', // Deep Red for track background
+  amber:        '#FFC107',
+  safe:         '#00E676', // Vibrant Neon Green
+  medical:      '#00B0FF', // Trustworthy Clinical Blue
+  medicalDark:  '#001B2E', // Tinted dark background for medical
+  contact:      '#B388FF', // Soft Indigo for contacts
+  contactDark:  '#1A0B2E', // Tinted dark background for contacts
+  bg:           '#0B0F19', // Deep Tactical Navy/Slate (Not flat black)
+  surface:      '#131A2A', // Elevated slate
+  surfaceRaised:'#1E2638',
+  surfaceBorder:'#2A3441',
+  textPrimary:  '#F8FAFC',
+  textSecondary:'#94A3B8',
+  textMuted:    '#475569',
   navBlue:      '#0A84FF',
+  white:        '#FFFFFF',
 };
 
-const FONT = { 
-  black:   '900' as const, 
-  bold:    '700' as const, 
-  semi:    '600' as const, 
-  medium:  '500' as const, 
-  regular: '400' as const 
-};
-
+const FONT = { black: '900' as const, bold: '700' as const, semi: '600' as const, medium: '500' as const, regular: '400' as const };
 const RADIUS = { sm: 6, md: 10, lg: 16, xl: 20, pill: 999 };
 const SHADOW_DANGER = { shadowColor: COLORS.danger, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.45, shadowRadius: 16, elevation: 12 };
 const SHADOW_AMBER = { shadowColor: COLORS.amber, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.4, shadowRadius: 14, elevation: 10 };
@@ -449,6 +449,29 @@ export default function HomeScreen() {
   const isBystander = emergencyRole === 'BYSTANDER';
   const accentColor = isBystander ? COLORS.amber : COLORS.danger;
 
+  // ─── Dynamic Service Theming ──────────────────────────────────────────────────
+const getServiceTheme = (type: string) => {
+  const normalizedType = type.toLowerCase();
+  
+  if (normalizedType.includes('hospital') || normalizedType.includes('pharmacy') || normalizedType.includes('medical')) {
+    return { icon: 'hospital-box', color: '#EF4444' }; // Tactical Red
+  }
+  if (normalizedType.includes('police')) {
+    return { icon: 'shield-half-full', color: '#3B82F6' }; // Security Blue
+  }
+  if (normalizedType.includes('repair') || normalizedType.includes('auto')) {
+    return { icon: 'wrench', color: '#F59E0B' }; // Warning Amber
+  }
+  if (normalizedType.includes('fuel')) {
+    return { icon: 'gas-station', color: '#10B981' }; // Safe Green
+  }
+  if (normalizedType.includes('fire')) {
+    return { icon: 'fire-truck', color: '#EF4444' }; // Tactical Red
+  }
+  
+  return { icon: 'map-marker-radius', color: COLORS.textSecondary }; // Fallback
+};
+
   // ═══════════════════════════════════════════════════════════════════════════
   // RENDER
   // ═══════════════════════════════════════════════════════════════════════════
@@ -582,17 +605,39 @@ export default function HomeScreen() {
 
           <View style={styles.tabRow}>
             {(['ALL', 'MEDICAL', 'POLICE', 'AUTO'] as const).map((tab) => {
-              const tabIcons: Record<string, string> = { ALL: '🗺', MEDICAL: '🏥', POLICE: '🚓', AUTO: '🔧' };
+              // Dynamic Tab Configuration
+              const tabConfig: Record<string, { icon: any, color: string }> = { 
+                ALL: { icon: 'view-dashboard', color: COLORS.textPrimary }, 
+                MEDICAL: { icon: 'hospital-box', color: '#EF4444' }, 
+                POLICE: { icon: 'shield-half-full', color: '#3B82F6' }, 
+                AUTO: { icon: 'wrench', color: '#F59E0B' } 
+              };
+              
               const active = activeTab === tab;
+              const themeColor = tabConfig[tab].color;
+
               return (
                 <TouchableOpacity 
                   key={tab} 
-                  style={[styles.tabBtn, active && { backgroundColor: COLORS.surfaceRaised, borderColor: accentColor }]} 
+                  style={[
+                    styles.tabBtn, 
+                    active && { backgroundColor: COLORS.surfaceRaised, borderColor: themeColor }
+                  ]} 
                   onPress={() => { setActiveTab(tab); setShowAllServices(false); }} 
                   activeOpacity={0.8}
                 >
-                  <Text style={styles.tabBtnIcon}>{tabIcons[tab]}</Text>
-                  <Text style={[styles.tabBtnLabel, active && { color: COLORS.textPrimary }]}>{tab}</Text>
+                  <MaterialCommunityIcons 
+                    name={tabConfig[tab].icon} 
+                    size={22} 
+                    color={active ? themeColor : COLORS.textMuted} 
+                    style={{ marginBottom: 4 }}
+                  />
+                  <Text style={[
+                    styles.tabBtnLabel, 
+                    active ? { color: themeColor } : { color: COLORS.textMuted }
+                  ]}>
+                    {tab}
+                  </Text>
                 </TouchableOpacity>
               );
             })}
@@ -618,23 +663,39 @@ export default function HomeScreen() {
             }
             ListEmptyComponent={
               <View style={styles.emptyState}>
-                <Text style={styles.emptyIcon}>📡</Text>
+                <MaterialCommunityIcons name="satellite-uplink" size={48} color={COLORS.textMuted} />
                 <Text style={styles.emptyTitle}>No services found</Text>
                 <Text style={styles.emptyBody}>No {activeTab} services detected nearby. Try broadening the filter.</Text>
               </View>
             }
-            renderItem={({ item }) => (
-              <View style={[styles.serviceCard, { borderLeftWidth: 4, borderLeftColor: accentColor }]}>
-                <Text style={styles.serviceIcon}>{getServiceIcon(item.type)}</Text>
-                <View style={styles.serviceInfo}>
-                  <Text style={styles.serviceName}>{item.name}</Text>
-                  <Text style={[styles.serviceType, { color: accentColor }]}>{item.type.toUpperCase()}</Text>
+            renderItem={({ item }) => {
+              const theme = getServiceTheme(item.type); // Fetch color and icon
+
+              return (
+                <View style={[styles.serviceCard, { borderLeftWidth: 4, borderLeftColor: theme.color }]}>
+                  
+                  {/* The New Professional Icon */}
+                  <View style={{ width: 40, alignItems: 'center' }}>
+                    <MaterialCommunityIcons name={theme.icon} size={28} color={theme.color} />
+                  </View>
+
+                  <View style={styles.serviceInfo}>
+                    <Text style={styles.serviceName}>{item.name}</Text>
+                    <Text style={[styles.serviceType, { color: theme.color }]}>
+                      {item.type.toUpperCase().replace('_', ' ')}
+                    </Text>
+                  </View>
+                  
+                  <TouchableOpacity 
+                    style={[styles.navBtn, { backgroundColor: COLORS.surfaceRaised, borderWidth: 1, borderColor: COLORS.surfaceBorder }]} 
+                    onPress={() => startNavigation(item.latitude || item.lat, item.longitude || item.lon)} 
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.navBtnText}>GO  ›</Text>
+                  </TouchableOpacity>
                 </View>
-                <TouchableOpacity style={[styles.navBtn, { backgroundColor: COLORS.surfaceRaised }]} onPress={() => startNavigation(item.latitude || item.lat, item.longitude || item.lon)} activeOpacity={0.85}>
-                  <Text style={styles.navBtnText}>GO  ›</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+              );
+            }}
           />
         </View>
       ) : (
@@ -683,7 +744,8 @@ export default function HomeScreen() {
 
           {nearbyServices.length > 0 && (
             <View style={styles.nearbyStrip}>
-              <Text style={styles.nearbyStripText}>📡  {nearbyServices.length} offline services ready</Text>
+              <MaterialCommunityIcons name="database-check" size={16} color={COLORS.safe} style={{ marginRight: 6 }} />
+              <Text style={styles.nearbyStripText}>{nearbyServices.length} offline services ready</Text>
             </View>
           )}
 
@@ -761,7 +823,7 @@ const styles = StyleSheet.create({
   
   // Emergency Mode Active
   emergencyRoot: { flex: 1, paddingHorizontal: 20, paddingTop: Platform.OS === 'ios' ? 60 : 40 },
-  emergencyTopBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 16, borderBottomWidth: 1 },
+  emergencyTopBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: COLORS.surfaceBorder },
   exitBtn: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.surfaceBorder, borderRadius: RADIUS.pill, paddingHorizontal: 14, paddingVertical: 7 },
   exitBtnText: { color: COLORS.textPrimary, fontSize: 13, fontWeight: FONT.semi },
   modeBadge: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderRadius: RADIUS.pill, paddingHorizontal: 12, paddingVertical: 5 },
@@ -792,34 +854,40 @@ const styles = StyleSheet.create({
   primaryActionText: { color: COLORS.textPrimary, fontSize: 15, fontWeight: FONT.black, letterSpacing: 1 },
   
   // Main Dashboard
-  dashRoot: { flex: 1, paddingHorizontal: 20, paddingTop: Platform.OS === 'ios' ? 60 : 40 },
-  dashHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 },
+  dashRoot: { flex: 1, paddingTop: Platform.OS === 'ios' ? 60 : 40 },
+  dashHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, paddingHorizontal: 20 },
   appName: { fontSize: 36, fontWeight: FONT.black, color: COLORS.textPrimary, letterSpacing: -1 },
   editProfileBtn: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.surfaceBorder, borderRadius: RADIUS.pill, paddingHorizontal: 16, paddingVertical: 8, marginTop: 4 },
   editProfileText: { color: COLORS.textPrimary, fontSize: 14, fontWeight: FONT.semi },
-  medCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: 20, marginBottom: 14, borderWidth: 1, borderColor: COLORS.surfaceBorder },
+  
+  // Medical Card (Clinical Blue Theme)
+  medCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: 20, marginBottom: 14, marginHorizontal: 20, borderWidth: 1, borderColor: COLORS.medical + '55' },
   medCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  medCardLabel: { fontSize: 10, fontWeight: FONT.bold, color: COLORS.textMuted, letterSpacing: 2 },
-  bloodTypePill: { backgroundColor: COLORS.dangerDark, borderWidth: 1, borderColor: COLORS.danger, borderRadius: RADIUS.pill, paddingHorizontal: 14, paddingVertical: 4 },
-  bloodTypeText: { color: COLORS.danger, fontSize: 15, fontWeight: FONT.black },
+  medCardLabel: { fontSize: 10, fontWeight: FONT.bold, color: COLORS.textSecondary, letterSpacing: 2 },
+  bloodTypePill: { backgroundColor: COLORS.medicalDark, borderWidth: 1, borderColor: COLORS.medical, borderRadius: RADIUS.pill, paddingHorizontal: 14, paddingVertical: 4 },
+  bloodTypeText: { color: COLORS.medical, fontSize: 15, fontWeight: FONT.black },
   medRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
   medField: { gap: 4 },
   medFieldLabel: { fontSize: 9, fontWeight: FONT.bold, color: COLORS.textMuted, letterSpacing: 2 },
   medFieldValue: { fontSize: 16, fontWeight: FONT.bold, color: COLORS.textPrimary },
-  contactsCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: 20, marginBottom: 14, borderWidth: 1, borderColor: COLORS.surfaceBorder },
-  contactsLabel: { fontSize: 10, fontWeight: FONT.bold, color: COLORS.textMuted, letterSpacing: 2, marginBottom: 14 },
-  contactRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 12 },
-  contactIndex: { width: 28, height: 28, borderRadius: 14, backgroundColor: COLORS.surfaceRaised, alignItems: 'center', justifyContent: 'center' },
-  contactIndexText: { fontSize: 12, fontWeight: FONT.bold, color: COLORS.textPrimary },
-  contactNum: { fontSize: 16, fontWeight: FONT.medium, color: COLORS.textPrimary },
-  nearbyStrip: { backgroundColor: COLORS.surface, borderRadius: RADIUS.md, paddingVertical: 10, paddingHorizontal: 16, marginBottom: 20, borderWidth: 1, borderColor: COLORS.surfaceBorder },
-  nearbyStripText: { color: COLORS.textMuted, fontSize: 13, fontWeight: FONT.medium },
   
-  // Slider UI
+  // Contacts Card (Soft Indigo Theme)
+  contactsCard: { backgroundColor: COLORS.surface, borderRadius: RADIUS.lg, padding: 20, marginBottom: 14, marginHorizontal: 20, borderWidth: 1, borderColor: COLORS.contact + '55' },
+  contactsLabel: { fontSize: 10, fontWeight: FONT.bold, color: COLORS.textSecondary, letterSpacing: 2, marginBottom: 14 },
+  contactRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 12 },
+  contactIndex: { width: 28, height: 28, borderRadius: 14, backgroundColor: COLORS.contactDark, borderWidth: 1, borderColor: COLORS.contact, alignItems: 'center', justifyContent: 'center' },
+  contactIndexText: { fontSize: 12, fontWeight: FONT.bold, color: COLORS.contact },
+  contactNum: { fontSize: 16, fontWeight: FONT.medium, color: COLORS.textPrimary },
+  
+  // Nearby Strip
+  nearbyStrip: { backgroundColor: COLORS.surfaceRaised, borderRadius: RADIUS.md, paddingVertical: 12, paddingHorizontal: 16, marginBottom: 20, marginHorizontal: 20, borderWidth: 1, borderColor: COLORS.surfaceBorder },
+  nearbyStripText: { color: COLORS.textSecondary, fontSize: 13, fontWeight: FONT.bold, textAlign: 'center' },
+  
+  // Alarming SOS Slider UI
   sliderWrapper: { position: 'absolute', bottom: Platform.OS === 'ios' ? 50 : 36, left: 20, right: 20 },
-  sliderTrack: { height: 68, backgroundColor: COLORS.surface, borderRadius: RADIUS.pill, justifyContent: 'center', borderWidth: 1, borderColor: COLORS.surfaceBorder, overflow: 'hidden' },
-  sliderHint: { position: 'absolute', width: '100%', textAlign: 'center', color: COLORS.textMuted, fontWeight: FONT.bold, fontSize: 14, letterSpacing: 1.5 },
+  sliderTrack: { height: 72, backgroundColor: COLORS.dangerDark, borderRadius: RADIUS.pill, justifyContent: 'center', borderWidth: 2, borderColor: COLORS.danger, overflow: 'hidden' },
+  sliderHint: { position: 'absolute', width: '100%', textAlign: 'center', color: COLORS.danger, fontWeight: FONT.black, fontSize: 15, letterSpacing: 2 },
   sliderKnob: { position: 'absolute', left: 4, width: 60, height: 60, backgroundColor: COLORS.danger, borderRadius: RADIUS.pill, justifyContent: 'center', alignItems: 'center' },
-  sliderKnobText: { color: COLORS.textPrimary, fontSize: 24, fontWeight: FONT.black },
-  sliderCaption: { textAlign: 'center', color: COLORS.textMuted, fontSize: 11, marginTop: 8, letterSpacing: 0.5 },
+  sliderKnobText: { color: COLORS.white, fontSize: 24, fontWeight: FONT.black },
+  sliderCaption: { textAlign: 'center', color: COLORS.textMuted, fontSize: 12, marginTop: 10, letterSpacing: 0.5, fontWeight: FONT.semi },
 });
