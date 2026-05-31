@@ -259,7 +259,8 @@ export const syncAreaIfNeeded = async (lat, lon) => {
         VALUES (?, ?, 1, 0)
         ON CONFLICT(tile_id) DO UPDATE SET 
         last_accessed = excluded.last_accessed,
-        visit_count = visit_count + 1
+        visit_count = visit_count + 1,
+        is_protected = CASE WHEN visit_count + 1 >= 3 THEN 1 ELSE is_protected END
       `, [tId, now]);
     }
 
