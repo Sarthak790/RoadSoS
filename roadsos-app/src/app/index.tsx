@@ -6,6 +6,7 @@ import * as Brightness from 'expo-brightness';
 import { activateKeepAwakeAsync } from 'expo-keep-awake';
 import * as Location from 'expo-location';
 import { Accelerometer } from 'expo-sensors';
+import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -63,6 +64,74 @@ const COLORS = {
   white:        '#FFFFFF',
 };
 
+const mapDarkTheme = [
+  {
+    "elementType": "geometry",
+    "stylers": [{"color": "#1A2138"}] // Using your app's surface color
+  },
+  {
+    "elementType": "labels.icon",
+    "stylers": [{"visibility": "off"}] // Hides useless icons like restaurants
+  },
+  {
+    "elementType": "labels.text.fill",
+    "stylers": [{"color": "#8F9BB3"}]
+  },
+  {
+    "elementType": "labels.text.stroke",
+    "stylers": [{"color": "#1A2138"}]
+  },
+  {
+    "featureType": "administrative.land_parcel",
+    "elementType": "labels.text.fill",
+    "stylers": [{"color": "#bdbdbd"}]
+  },
+  {
+    "featureType": "poi",
+    "elementType": "geometry",
+    "stylers": [{"color": "#eeeeee"}]
+  },
+  {
+    "featureType": "road",
+    "elementType": "geometry",
+    "stylers": [{"color": "#2E3A59"}] // Using your border color for roads
+  },
+  {
+    "featureType": "road.arterial",
+    "elementType": "labels.text.fill",
+    "stylers": [{"color": "#757575"}]
+  },
+  {
+    "featureType": "road.highway",
+    "elementType": "geometry",
+    "stylers": [{"color": "#3B82F6"}] // Highlighting highways in your brand blue
+  },
+  {
+    "featureType": "water",
+    "elementType": "geometry",
+    "stylers": [{"color": "#0A0E17"}] // Pitch black for water
+  }
+];
+
+const SAFETY_DATABASE = [
+  "Always keep a 3-second following distance. In adverse weather, double it.",
+  "If a tire blows out, do not brake hard. Grip the steering wheel firmly and let the car slow down naturally.",
+  "Keep your headlights on even during the day to increase visibility to other drivers.",
+  "In a skid, steer in the direction you want the front of the vehicle to go.",
+  "If you are stranded, stay with your vehicle. It is much easier for rescuers to spot a car than a person.",
+  "Keep a window breaker and seatbelt cutter within arm's reach of the driver's seat.",
+  "Never use cruise control on wet or icy roads to maintain full manual traction control.",
+  "If your vehicle plunges into water, open the windows immediately before the electrical systems fail.",
+  "Pack a high-visibility reflective vest in your glovebox for nighttime roadside repairs.",
+  "Check your tire pressure monthly; under-inflated tires are the leading cause of blowouts.",
+  // --- NEW ADDITIONS ---
+  "If your accelerator sticks, shift to neutral, apply firm brakes, and steer to safety.",
+  "In heavy fog, use low-beam headlights. High beams will reflect off the moisture and blind you.",
+  "When driving through deep water, maintain a slow, steady speed to prevent water from entering the intake.",
+  "If your engine overheats, turn off the AC and turn on the heater to draw heat away from the engine block.",
+  "Never mix radial and non-radial tires on your vehicle, as it severely affects steering and grip."
+];
+
 const FONT = { black: '900' as const, bold: '700' as const, semi: '600' as const, medium: '500' as const, regular: '400' as const };
 const RADIUS = { sm: 6, md: 10, lg: 16, xl: 20, pill: 999 };
 const SHADOW_DANGER = { shadowColor: COLORS.danger, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.45, shadowRadius: 16, elevation: 12 };
@@ -98,6 +167,11 @@ export default function HomeScreen() {
     name: '', bloodType: '', vehicleId: '',
     contact1: '', contact2: '', contact3: ''
   });
+  const [safetyQuotes, setSafetyQuotes] = useState([]);
+  const [showTacticalMap, setShowTacticalMap] = useState(false);
+  // This will hold the { latitude, longitude } for the map center
+  const [mapRegion, setMapRegion] = useState(null);
+  
 
   // Safe State Refs for Crash Closure Bug
   const profileRef = useRef<UserProfile>(profile);
@@ -106,6 +180,13 @@ export default function HomeScreen() {
   useEffect(() => { nearbyRef.current = nearbyServices; }, [nearbyServices]);
 
   useLocationWatcher(isVaultReady);
+
+  useEffect(() => {
+    // 1. Copy the database and shuffle it randomly
+    const shuffled = [...SAFETY_DATABASE].sort(() => 0.5 - Math.random());
+    // 2. Slice exactly 3 quotes for this session
+    setSafetyQuotes(shuffled.slice(0, 3));
+  }, []);
 
   // ==========================================
   // SMART BOOT CHECK (SPEED / DAILY REMINDER)
@@ -286,6 +367,9 @@ export default function HomeScreen() {
   // ==========================================
   // BOOT SEQUENCE
   // ==========================================
+  // ==========================================
+  // BOOT SEQUENCE & TACTICAL MAP LOCK
+  // ==========================================
   useEffect(() => {
     const bootSystem = async () => {
       try {
@@ -306,6 +390,14 @@ export default function HomeScreen() {
             { id: '4', type: 'fuel', name: 'Web Test Petrol Pump', distance: 3.1 }
           ]);
           
+          // Fallback map state for Web Testing (Patna Coordinates)
+          setMapRegion({
+            latitude: 25.5941,
+            longitude: 85.1376,
+            latitudeDelta: 0.02,
+            longitudeDelta: 0.02,
+          });
+
           setIsVaultReady(true);
           return; 
         }
@@ -325,9 +417,22 @@ export default function HomeScreen() {
           return;
         }
         
+        // --- GRAB LIVE SATELLITE POSITION ---
         const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        await syncAreaIfNeeded(location.coords.latitude, location.coords.longitude);
-        const localData = await getLocalEmergencyServices(location.coords.latitude, location.coords.longitude);
+        const currentLat = location.coords.latitude;
+        const currentLon = location.coords.longitude;
+
+        // --- UPDATE THE TACTICAL MAP ---
+        setMapRegion({
+          latitude: currentLat,
+          longitude: currentLon,
+          latitudeDelta: 0.02, // Zoom Level (smaller is closer)
+          longitudeDelta: 0.02,
+        });
+
+        // --- SYNC THE OFFLINE VAULT ---
+        await syncAreaIfNeeded(currentLat, currentLon);
+        const localData = await getLocalEmergencyServices(currentLat, currentLon);
         
         setNearbyServices(localData);
         setIsVaultReady(true);
@@ -520,6 +625,97 @@ const getServiceTheme = (type: string) => {
     <View style={styles.root}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
 
+      {/* ─── MODAL 2 · TACTICAL GRID MAP ────────────────────────────────────────── */}
+      <Modal visible={showTacticalMap} animationType="slide" transparent={false}>
+        <View style={[styles.onboardingRoot, { justifyContent: 'flex-start', paddingTop: 60, backgroundColor: '#0A0E17' }]}>
+          
+          {/* Map Header */}
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, paddingHorizontal: 20 }}>
+            <View>
+              <Text style={[styles.onboardingBadgeText, { color: COLORS.safe || '#00E676', marginBottom: 4, letterSpacing: 1.5 }]}>
+                {mapRegion ? "SATELLITE LOCK ACTIVE" : "ACQUIRING LINK"}
+              </Text>
+              <Text style={styles.onboardingTitle}>Telemetry Grid</Text>
+            </View>
+            <TouchableOpacity 
+              onPress={() => setShowTacticalMap(false)} 
+              style={{ backgroundColor: COLORS.surfaceRaised || '#1A2138', padding: 8, borderRadius: 20, borderWidth: 1, borderColor: COLORS.surfaceBorder || '#2E3A59' }}
+            >
+              <MaterialCommunityIcons name="close" size={24} color={COLORS.textPrimary || '#FFFFFF'} />
+            </TouchableOpacity>
+          </View>
+
+          {/* Map Viewport Container */}
+          <View style={{ 
+            flex: 1, 
+            marginHorizontal: 20, 
+            marginBottom: 40,
+            borderRadius: RADIUS.md || 12, 
+            borderWidth: 1, 
+            borderColor: COLORS.surfaceBorder || '#2E3A59', 
+            overflow: 'hidden', // Forces the map viewport to respect the container's rounded corners
+            backgroundColor: '#05070B'
+          }}>
+            {mapRegion ? (
+              <MapView
+                provider={PROVIDER_GOOGLE}
+                style={{ flex: 1 }}
+                region={mapRegion}
+                showsUserLocation={true}
+                showsMyLocationButton={false}
+                showsCompass={false}
+                customMapStyle={mapDarkTheme} // Applies the high-contrast tactical dark matrix
+              >
+                {/* Dynamic Secure Zone Safe Perimeter Center-Marker */}
+                <Marker coordinate={{ latitude: mapRegion.latitude, longitude: mapRegion.longitude }}>
+                  <View style={{
+                    width: 44,
+                    height: 44,
+                    borderRadius: 22,
+                    backgroundColor: 'rgba(0, 230, 118, 0.15)',
+                    borderWidth: 1.5,
+                    borderColor: 'rgba(0, 230, 118, 0.6)',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}>
+                    {/* Core GPS Ping Node */}
+                    <View style={{ 
+                      width: 10, 
+                      height: 10, 
+                      borderRadius: 5, 
+                      backgroundColor: COLORS.safe || '#00E676',
+                      shadowColor: COLORS.safe || '#00E676',
+                      shadowOffset: { width: 0, height: 0 },
+                      shadowOpacity: 0.8,
+                      shadowRadius: 6
+                    }} />
+                  </View>
+                </Marker>
+              </MapView>
+            ) : (
+              /* High-Aesthetic Satellite Intercept Loader */
+              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 }}>
+                <MaterialCommunityIcons 
+                  name="satellite-variant" 
+                  size={48} 
+                  color={COLORS.navBlue || '#3B82F6'} 
+                  style={{ opacity: 0.7 }} 
+                />
+                <View style={{ alignItems: 'center', gap: 4 }}>
+                  <Text style={{ color: COLORS.textPrimary || '#FFFFFF', fontSize: 14, fontWeight: 'bold', letterSpacing: 2 }}>
+                    ESTABLISHING SATELLITE LINK
+                  </Text>
+                  <Text style={{ color: COLORS.textMuted || '#8F9BB3', fontSize: 11, letterSpacing: 1 }}>
+                    PINGING GLOBAL POSITIONING MATRIX...
+                  </Text>
+                </View>
+              </View>
+            )}
+          </View>
+
+        </View>
+      </Modal>
+
       {/* MODAL 1 · ONBOARDING */}
       <Modal visible={showOnboarding} animationType="slide" transparent={false}>
         <View style={styles.onboardingRoot}>
@@ -527,7 +723,7 @@ const getServiceTheme = (type: string) => {
             <View style={styles.onboardingBadge}>
               <Text style={styles.onboardingBadgeText}>SETUP</Text>
             </View>
-            <Text style={styles.onboardingTitle}>RoadSOS</Text>
+            <Text style={styles.onboardingTitle}>SentinelX</Text>
             <Text style={styles.onboardingSubtitle}>Configure your Medical ID & Emergency Contacts</Text>
           </View>
 
@@ -739,7 +935,7 @@ const getServiceTheme = (type: string) => {
         <View style={styles.dashRoot}>
           <View style={styles.dashHeader}>
             <View>
-              <Text style={styles.appName}>RoadSOS</Text>
+              <Text style={styles.appName}>SentinelX</Text>
               <StatusBadge label="SYSTEM ARMED  ●  VAULT READY" color={COLORS.safe} />
             </View>
             <TouchableOpacity style={styles.editProfileBtn} onPress={() => setShowOnboarding(true)}>
@@ -780,11 +976,54 @@ const getServiceTheme = (type: string) => {
           </View>
 
           {nearbyServices.length > 0 && (
-            <View style={styles.nearbyStrip}>
-              <MaterialCommunityIcons name="database-check" size={16} color={COLORS.safe} style={{ marginRight: 6 }} />
-              <Text style={styles.nearbyStripText}>{nearbyServices.length} offline services ready</Text>
+            <View style={[styles.nearbyStrip, { justifyContent: 'space-between' }]}>
+              {/* Left Side: Status */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <MaterialCommunityIcons name="database-check" size={16} color={COLORS.safe || '#00E676'} />
+                <Text style={styles.nearbyStripText}>{nearbyServices.length} offline services</Text>
+              </View>
+              
+              {/* Right Side: The Trigger */}
+              <TouchableOpacity 
+                style={{ 
+                  backgroundColor: (COLORS.navBlue || '#3B82F6') + '20', // 20% opacity background
+                  paddingVertical: 6, 
+                  paddingHorizontal: 16, 
+                  borderRadius: RADIUS.sm || 6, 
+                  borderWidth: 1, 
+                  borderColor: COLORS.navBlue || '#3B82F6' 
+                }}
+                onPress={() => setShowTacticalMap(true)}
+                activeOpacity={0.7}
+              >
+                <Text style={{ color: COLORS.navBlue || '#3B82F6', fontSize: 11, fontWeight: 'bold', letterSpacing: 1.5 }}>
+                  GRID MAP
+                </Text>
+              </TouchableOpacity>
             </View>
           )}
+          {/* ─── TACTICAL SAFETY INSTRUCTIONS CAROUSEL ─── */}
+          <View style={styles.carouselContainer}>
+            <Text style={styles.carouselTitle}>TACTICAL PROTOCOLS</Text>
+            <FlatList
+              data={safetyQuotes}
+              keyExtractor={(item, index) => index.toString()}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              snapToInterval={295} // Width of the card (280) + the margin (15) for smooth snapping
+              decelerationRate="fast"
+              contentContainerStyle={{ paddingHorizontal: 4 }}
+              renderItem={({ item, index }) => (
+                <View style={styles.safetyCard}>
+                  <View style={styles.safetyCardHeader}>
+                    <MaterialCommunityIcons name="shield-alert-outline" size={16} color={COLORS.navBlue || '#3B82F6'} />
+                    <Text style={styles.safetyCardIndex}>PROTOCOL 0{index + 1}</Text>
+                  </View>
+                  <Text style={styles.safetyCardText}>{item}</Text>
+                </View>
+              )}
+            />
+          </View>
 
           <View style={styles.sliderWrapper}>
             <View style={styles.sliderTrack}>
@@ -918,8 +1157,70 @@ const styles = StyleSheet.create({
   contactNum: { fontSize: 16, fontWeight: FONT.medium, color: COLORS.textPrimary },
   
   // Nearby Strip
-  nearbyStrip: { backgroundColor: COLORS.surfaceRaised, borderRadius: RADIUS.md, paddingVertical: 12, paddingHorizontal: 16, marginBottom: 20, marginHorizontal: 20, borderWidth: 1, borderColor: COLORS.surfaceBorder },
-  nearbyStripText: { color: COLORS.textSecondary, fontSize: 13, fontWeight: FONT.bold, textAlign: 'center' },
+  // Update these two styles in your stylesheet
+  nearbyStrip: { 
+    backgroundColor: COLORS.surfaceRaised, 
+    borderRadius: RADIUS.md, 
+    paddingVertical: 12, 
+    paddingHorizontal: 16, 
+    marginBottom: 20, 
+    borderWidth: 1, 
+    borderColor: COLORS.surfaceBorder,
+    // THE FIX: Flex-box centering
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8
+  },
+  nearbyStripText: { 
+    color: COLORS.textSecondary, 
+    fontSize: 13, 
+    fontWeight: FONT.bold, 
+    // Removed textAlign: 'center' (the parent handles it now)
+  },
+  // --- CAROUSEL STYLES ---
+  carouselContainer: {
+    // flex: 1, // THE MAGIC FIX: This expands to consume all empty space, pushing the SOS button down!
+    marginTop: 10,
+    marginBottom: 20,
+    justifyContent: 'center',
+  },
+  carouselTitle: {
+    color: COLORS.textMuted || '#8F9BB3',
+    fontSize: 11,
+    fontWeight: 'bold',
+    letterSpacing: 1.5,
+    marginBottom: 12,
+    marginLeft: 4,
+  },
+  safetyCard: {
+    width: 280,
+    height: 110,
+    backgroundColor: COLORS.surfaceRaised || '#1A2138',
+    borderRadius: RADIUS.md || 12,
+    padding: 14,
+    marginRight: 15,
+    borderWidth: 1,
+    borderColor: COLORS.surfaceBorder || '#2E3A59',
+    justifyContent: 'flex-start',
+  },
+  safetyCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    gap: 6,
+  },
+  safetyCardIndex: {
+    color: COLORS.navBlue || '#3B82F6',
+    fontSize: 12,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+  safetyCardText: {
+    color: COLORS.textSecondary || '#C5CEE0',
+    fontSize: 14,
+    lineHeight: 20,
+  },
   
   // Alarming SOS Slider UI
   sliderWrapper: { position: 'absolute', bottom: Platform.OS === 'ios' ? 50 : 36, left: 20, right: 20 },
