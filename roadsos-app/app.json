@@ -21,7 +21,7 @@
       "predictiveBackGestureEnabled": false,
       "config": {
         "googleMaps": {
-          "apiKey": "AIzaSy_DUMMY_KEY_TO_BYPASS_STARTUP_CRASH"
+          "apiKey": "AIzaSyBqFdWLUAzyCzjF-fRC4S8tE_RPR1s1a9w"
       } },
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
